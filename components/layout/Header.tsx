@@ -27,14 +27,15 @@ export default function Header() {
         </nav>
 
         {/* Login */}
-        <Button
-          asChild
-          variant="outline"
-          size="sm"
-          className="border-white/40 text-white bg-transparent hover:bg-white/10 hover:text-white"
-        >
-          <Link href="/login">Login</Link>
-        </Button>
+        <Link href="/login">
+          <Button
+            variant="outline"
+            size="sm"
+            className="border-white/40 text-white bg-transparent hover:bg-white/10 hover:text-white"
+          >
+            Login
+          </Button>
+        </Link>
       </div>
     </header>
   );
