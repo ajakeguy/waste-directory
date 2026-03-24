@@ -20,7 +20,7 @@ const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
 if (!supabaseUrl || !serviceRoleKey) {
   console.error(
-    "Missing required env vars: NEXT_PUBLIC_SUPABASE_URL (or SUPABASE_URL) and SUPABASE_SERVICE_ROLE_KEY"
+    "Missing required env vars: SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY"
   );
   process.exit(1);
 }
@@ -115,14 +115,18 @@ function extractItems(parsed: Record<string, unknown>): Record<string, unknown>[
     | undefined;
   if (rssChannel?.["item"]) {
     const items = rssChannel["item"];
-    return Array.isArray(items) ? items : [items];
+    return Array.isArray(items)
+      ? (items as Record<string, unknown>[])
+      : [items as Record<string, unknown>];
   }
 
   // Atom
   const feed = parsed["feed"] as Record<string, unknown> | undefined;
   if (feed?.["entry"]) {
     const entries = feed["entry"];
-    return Array.isArray(entries) ? entries : [entries];
+    return Array.isArray(entries)
+      ? (entries as Record<string, unknown>[])
+      : [entries as Record<string, unknown>];
   }
 
   return [];
@@ -192,8 +196,7 @@ async function fetchSource(source: NewsSource): Promise<{
 
   // Build article objects and collect URLs to check for duplicates
   const articles: ArticleInsert[] = [];
-  for (const raw of items) {
-    const item = raw as Record<string, unknown>;
+  for (const item of items) {
 
     const title = extractText(item["title"]);
     const url = extractLink(item);
