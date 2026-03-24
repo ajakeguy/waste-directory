@@ -1,5 +1,7 @@
 import Link from "next/link";
 import { MapPin, Search } from "lucide-react";
+import { getArticles } from "@/lib/data/news";
+import { ArticleCard } from "@/components/news/ArticleCard";
 
 const states = [
   {
@@ -22,7 +24,8 @@ const states = [
   },
 ];
 
-export default function HomePage() {
+export default async function HomePage() {
+  const latestArticles = await getArticles({ limit: 3 });
   return (
     <div className="flex flex-col">
       {/* Hero */}
@@ -91,6 +94,33 @@ export default function HomePage() {
           </div>
         </div>
       </section>
+
+      {/* Latest News */}
+      {latestArticles.length > 0 && (
+        <section className="py-16 px-4 bg-white border-t border-gray-100">
+          <div className="max-w-5xl mx-auto">
+            <div className="flex items-center justify-between mb-8">
+              <div>
+                <h2 className="text-2xl font-bold text-gray-900">Latest News</h2>
+                <p className="text-gray-500 text-sm mt-1">
+                  Industry updates from leading trade publications
+                </p>
+              </div>
+              <Link
+                href="/news"
+                className="text-sm font-medium text-[#2D6A4F] hover:underline whitespace-nowrap"
+              >
+                View all news →
+              </Link>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+              {latestArticles.map((article) => (
+                <ArticleCard key={article.id} article={article} />
+              ))}
+            </div>
+          </div>
+        </section>
+      )}
 
       {/* CTA strip */}
       <section className="py-12 px-4 bg-white border-t border-gray-100">
