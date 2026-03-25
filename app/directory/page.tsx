@@ -3,7 +3,9 @@ import type { Metadata } from "next";
 import { FilterSidebar } from "@/components/directory/FilterSidebar";
 import { OrganizationCard } from "@/components/directory/OrganizationCard";
 import { getOrganizations } from "@/lib/data/organizations";
+import { getSavedOrgIds } from "@/lib/data/saved-items";
 import { Skeleton } from "@/components/ui/skeleton";
+import { createClient } from "@/lib/supabase/server";
 
 export const metadata: Metadata = {
   title: "Waste Hauler Directory | WasteDirectory",
@@ -44,13 +46,18 @@ async function DirectoryResults({
   services,
   verified,
   q,
+  userId,
 }: {
   state?: string;
   services: string[];
   verified: boolean;
   q?: string;
+  userId: string | null;
 }) {
-  const organizations = await getOrganizations({ state, services, verified, q });
+  const [organizations, savedOrgIds] = await Promise.all([
+    getOrganizations({ state, services, verified, q }),
+    userId ? getSavedOrgIds(userId) : Promise.resolve(new Set<string>()),
+  ]);
 
   if (organizations.length === 0) {
     return (
@@ -72,7 +79,12 @@ async function DirectoryResults({
         found
       </p>
       {organizations.map((org) => (
-        <OrganizationCard key={org.id} org={org} />
+        <OrganizationCard
+          key={org.id}
+          org={org}
+          savedOrgIds={savedOrgIds}
+          userId={userId}
+        />
       ))}
     </div>
   );
@@ -91,6 +103,12 @@ export default async function DirectoryPage({
       : [params.service]
     : [];
 
+  // Get current user for saved-state display
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
       <div className="mb-6">
@@ -104,12 +122,10 @@ export default async function DirectoryPage({
       </div>
 
       <div className="flex gap-6 items-start">
-        {/* Filter sidebar — needs Suspense because it uses useSearchParams */}
         <Suspense fallback={<div className="w-64 shrink-0" />}>
           <FilterSidebar />
         </Suspense>
 
-        {/* Results */}
         <div className="flex-1 min-w-0">
           <Suspense fallback={<ResultsSkeleton />}>
             <DirectoryResults
@@ -117,6 +133,7 @@ export default async function DirectoryPage({
               services={services}
               verified={params.verified === "1"}
               q={params.q}
+              userId={user?.id ?? null}
             />
           </Suspense>
         </div>

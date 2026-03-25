@@ -4,7 +4,9 @@ import type { Metadata } from "next";
 import { FilterSidebar } from "@/components/directory/FilterSidebar";
 import { OrganizationCard } from "@/components/directory/OrganizationCard";
 import { getOrganizations } from "@/lib/data/organizations";
+import { getSavedOrgIds } from "@/lib/data/saved-items";
 import { Skeleton } from "@/components/ui/skeleton";
+import { createClient } from "@/lib/supabase/server";
 import {
   STATE_SLUG_TO_CODE,
   STATE_SLUG_TO_NAME,
@@ -59,16 +61,17 @@ async function StateResults({
   stateCode,
   services,
   verified,
+  userId,
 }: {
   stateCode: string;
   services: string[];
   verified: boolean;
+  userId: string | null;
 }) {
-  const organizations = await getOrganizations({
-    state: stateCode,
-    services,
-    verified,
-  });
+  const [organizations, savedOrgIds] = await Promise.all([
+    getOrganizations({ state: stateCode, services, verified }),
+    userId ? getSavedOrgIds(userId) : Promise.resolve(new Set<string>()),
+  ]);
 
   if (organizations.length === 0) {
     return (
@@ -90,7 +93,7 @@ async function StateResults({
         found
       </p>
       {organizations.map((org) => (
-        <OrganizationCard key={org.id} org={org} />
+        <OrganizationCard key={org.id} org={org} savedOrgIds={savedOrgIds} userId={userId} />
       ))}
     </div>
   );
@@ -114,8 +117,12 @@ export default async function StateLandingPage({
       : [sp.service]
     : [];
 
-  // Fetch count for the hero (separate fast query)
-  const allOrgs = await getOrganizations({ state: stateCode });
+  // Fetch count for the hero + current user in parallel
+  const supabase = await createClient();
+  const [allOrgs, { data: { user } }] = await Promise.all([
+    getOrganizations({ state: stateCode }),
+    supabase.auth.getUser(),
+  ]);
   const totalCount = allOrgs.length;
 
   return (
@@ -148,6 +155,7 @@ export default async function StateLandingPage({
                 stateCode={stateCode}
                 services={services}
                 verified={sp.verified === "1"}
+                userId={user?.id ?? null}
               />
             </Suspense>
           </div>
