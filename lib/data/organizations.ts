@@ -20,7 +20,9 @@ export async function getOrganizations(
     .order("name");
 
   if (filters.state) {
-    query = query.eq("state", filters.state);
+    // Filter by service area, not HQ state — so a NJ-based company with a
+    // VT permit still shows up when browsing Vermont haulers.
+    query = query.contains("service_area_states", [filters.state]);
   }
 
   if (filters.verified) {
@@ -71,7 +73,7 @@ export async function getOrganizationCountByState(
   const { count, error } = await supabase
     .from("organizations")
     .select("*", { count: "exact", head: true })
-    .eq("state", state)
+    .contains("service_area_states", [state])
     .eq("active", true);
 
   if (error) return 0;

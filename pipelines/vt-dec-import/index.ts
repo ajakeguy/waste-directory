@@ -221,12 +221,12 @@ async function main() {
       slug,
       org_type: "hauler",
       phone: cleanPhone(row.phone),
+      // Use the company's actual city and state from the DEC database
+      // so "Fort Lee, NJ" stays "Fort Lee, NJ", not "Fort Lee, VT"
       city: row.town || null,
-      // state is always VT — this is the VT permit database; all records
-      // represent companies permitted to operate in Vermont
-      state: "VT",
-      // hq_state stores where the company's office is actually located
+      state: row.state || "VT",   // fallback to VT if column is empty
       hq_state: row.state || null,
+      // All records get VT in service_area_states — VT permit = serves VT
       service_types: mapWasteTypes(row.wasteType),
       service_area_states: ["VT"],
       verified: true,
