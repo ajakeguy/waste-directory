@@ -1,12 +1,22 @@
 import Link from "next/link";
-import { CheckCircle, MapPin, Phone, Globe, Heart } from "lucide-react";
+import { CheckCircle, MapPin, Phone, Globe } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
+import { SaveButton } from "@/components/directory/SaveButton";
 import { SERVICE_TYPE_LABELS, STATE_CODE_TO_SLUG } from "@/types";
 import type { Organization } from "@/types";
 
-export function OrganizationCard({ org }: { org: Organization }) {
+type Props = {
+  org: Organization;
+  /** IDs of orgs the current user has saved. Pass undefined when not logged in. */
+  savedOrgIds?: Set<string>;
+  /** Current user's ID — null/undefined means not logged in. */
+  userId?: string | null;
+};
+
+export function OrganizationCard({ org, savedOrgIds, userId = null }: Props) {
   const stateSlug = STATE_CODE_TO_SLUG[org.state] ?? org.state.toLowerCase();
   const profileUrl = `/haulers/${stateSlug}/${org.slug}`;
+  const isSaved = savedOrgIds?.has(org.id) ?? false;
 
   return (
     <div className="bg-white rounded-xl border border-gray-200 p-5 hover:border-[#2D6A4F]/40 hover:shadow-sm transition-all">
@@ -40,14 +50,13 @@ export function OrganizationCard({ org }: { org: Organization }) {
           )}
         </div>
 
-        {/* Save button — requires login (wired up in M4) */}
-        <button
-          aria-label="Save hauler"
-          title="Save (login required)"
-          className="p-1.5 rounded-lg text-gray-300 hover:text-rose-500 hover:bg-rose-50 transition-colors shrink-0"
-        >
-          <Heart className="size-4" />
-        </button>
+        {/* Save button — optimistic UI, redirects to /login if not authenticated */}
+        <SaveButton
+          orgId={org.id}
+          orgName={org.name}
+          initialSaved={isSaved}
+          userId={userId}
+        />
       </div>
 
       {/* Service badges */}
