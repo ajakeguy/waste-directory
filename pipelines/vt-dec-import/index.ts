@@ -2,7 +2,8 @@
  * pipelines/vt-dec-import/index.ts
  *
  * Fetches Vermont DEC permitted solid waste transporters and imports
- * Vermont-based haulers (Waste Type contains "S") into organizations.
+ * all VT-permitted solid waste haulers (Waste Type contains "S") into
+ * organizations, regardless of the company's mailing address state.
  *
  * Run via:
  *   pnpm exec tsx pipelines/vt-dec-import/index.ts
@@ -47,6 +48,7 @@ type OrgInsert = {
   phone: string | null;
   city: string | null;
   state: string;
+  hq_state: string | null;
   service_types: string[];
   service_area_states: string[];
   verified: boolean;
@@ -175,10 +177,11 @@ async function main() {
 
   console.log(`\nTotal rows parsed: ${allRows.length}`);
 
-  // 2. Filter: VT-based transporters whose Waste Type contains "S"
+  // 2. Filter: all records whose Waste Type contains the exact code "S"
+  // (solid waste transporters — excludes hazmat-only or septic-only permits)
+  // Note: we keep ALL records regardless of the company's mailing address state;
+  // a VT permit means they are authorised to operate in Vermont.
   const filtered = allRows.filter((r) => {
-    if (r.state !== "VT") return false;
-    // Check that one of the tokenised codes is exactly "S"
     const codes = r.wasteType
       .split(/[\s,/]+/)
       .map((c) => c.trim().toUpperCase());
@@ -186,7 +189,7 @@ async function main() {
   });
 
   console.log(
-    `After filtering (state=VT, waste type contains S): ${filtered.length} records`
+    `After filtering (waste type contains S, any HQ state): ${filtered.length} records`
   );
 
   if (filtered.length === 0) {
@@ -219,7 +222,11 @@ async function main() {
       org_type: "hauler",
       phone: cleanPhone(row.phone),
       city: row.town || null,
+      // state is always VT — this is the VT permit database; all records
+      // represent companies permitted to operate in Vermont
       state: "VT",
+      // hq_state stores where the company's office is actually located
+      hq_state: row.state || null,
       service_types: mapWasteTypes(row.wasteType),
       service_area_states: ["VT"],
       verified: true,
@@ -256,7 +263,7 @@ async function main() {
     console.log("\nAll records already exist — nothing to insert.");
     console.log("\n=== Summary ===");
     console.log(`Total found    : ${allRows.length}`);
-    console.log(`VT solid waste : ${filtered.length}`);
+    console.log(`Solid waste (S): ${filtered.length}`);
     console.log(`Already existed: ${existingSlugs.size}`);
     console.log(`Newly inserted : 0`);
     console.log(`Errors         : 0`);
@@ -290,7 +297,7 @@ async function main() {
   // 6. Summary
   console.log("\n=== Summary ===");
   console.log(`Total found    : ${allRows.length}`);
-  console.log(`VT solid waste : ${filtered.length}`);
+  console.log(`Solid waste (S): ${filtered.length}`);
   console.log(`Already existed: ${existingSlugs.size}`);
   console.log(`Newly inserted : ${inserted}`);
   console.log(`Errors         : ${errors}`);
