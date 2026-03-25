@@ -21,6 +21,7 @@ import {
   Globe,
   MapPin,
   ArrowLeft,
+  UserCircle,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { FilterSidebar } from "@/components/directory/FilterSidebar";
@@ -29,6 +30,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import {
   getOrganizations,
   getOrganizationBySlug,
+  getOrganizationContacts,
 } from "@/lib/data/organizations";
 import { getSavedOrgIds } from "@/lib/data/saved-items";
 import { createClient } from "@/lib/supabase/server";
@@ -214,9 +216,18 @@ async function StateLandingPage({
 
 // ── Hauler profile page ───────────────────────────────────────────────────────
 
+/** Human-readable label for a contact source identifier. */
+function contactSourceLabel(source: string | null): string | null {
+  if (!source) return null;
+  if (source === "vt_dec_permit_2025") return "From VT permit registry";
+  return null;
+}
+
 async function HaulerProfilePage({ segment }: { segment: string }) {
   const org = await getOrganizationBySlug(segment);
   if (!org) notFound();
+
+  const orgContacts = await getOrganizationContacts(org.id);
 
   const correctionSubject = encodeURIComponent(
     `Correction suggestion: ${org.name}`
@@ -346,6 +357,53 @@ async function HaulerProfilePage({ segment }: { segment: string }) {
           <p className="text-sm text-gray-700 leading-relaxed">
             {org.description}
           </p>
+        </section>
+      )}
+
+      {/* Contacts */}
+      {orgContacts.length > 0 && (
+        <section className="bg-white rounded-xl border border-gray-200 p-5 mb-4">
+          <h2 className="font-semibold text-gray-900 mb-4">Contacts</h2>
+          <div className="space-y-4">
+            {orgContacts.map((contact) => (
+              <div key={contact.id} className="flex items-start gap-3">
+                <UserCircle className="size-5 text-gray-300 shrink-0 mt-0.5" />
+                <div className="flex-1 min-w-0">
+                  {contact.name && (
+                    <p className="text-sm font-medium text-gray-900">
+                      {contact.name}
+                    </p>
+                  )}
+                  {contact.title && (
+                    <p className="text-xs text-gray-500">{contact.title}</p>
+                  )}
+                  {contact.phone && (
+                    <a
+                      href={`tel:${contact.phone}`}
+                      className="flex items-center gap-1 text-xs text-gray-600 hover:text-[#2D6A4F] transition-colors mt-0.5"
+                    >
+                      <Phone className="size-3 shrink-0" />
+                      {contact.phone}
+                    </a>
+                  )}
+                  {contact.email && (
+                    <a
+                      href={`mailto:${contact.email}`}
+                      className="flex items-center gap-1 text-xs text-gray-600 hover:text-[#2D6A4F] transition-colors mt-0.5"
+                    >
+                      <Mail className="size-3 shrink-0" />
+                      {contact.email}
+                    </a>
+                  )}
+                  {contactSourceLabel(contact.source) && (
+                    <p className="text-xs text-gray-400 mt-1">
+                      {contactSourceLabel(contact.source)}
+                    </p>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
         </section>
       )}
 

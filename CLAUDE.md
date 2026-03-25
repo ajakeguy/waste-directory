@@ -258,6 +258,34 @@ unique(user\_id, item\_id)
 
 
 
+\### contacts
+
+```sql
+
+id uuid primary key default gen\_random\_uuid()
+
+organization\_id uuid references organizations(id) on delete cascade not null
+
+name text
+
+title text
+
+phone text
+
+email text
+
+contact\_type text default 'primary'
+
+source text  -- e.g. 'vt\_dec\_permit\_2025'
+
+verified boolean default false
+
+created\_at timestamptz default now()
+
+```
+
+
+
 \## URL Structure
 
 \- `/` — Homepage

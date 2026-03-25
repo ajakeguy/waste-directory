@@ -1,6 +1,19 @@
 import { createClient } from "@/lib/supabase/server";
 import type { Organization } from "@/types";
 
+export type Contact = {
+  id: string;
+  organization_id: string;
+  name: string | null;
+  title: string | null;
+  phone: string | null;
+  email: string | null;
+  contact_type: string;
+  source: string | null;
+  verified: boolean;
+  created_at: string;
+};
+
 export type OrganizationFilters = {
   state?: string; // 2-letter code e.g. "VT"
   services?: string[];
@@ -63,6 +76,26 @@ export async function getOrganizationBySlug(
 
   if (error) return null;
   return data;
+}
+
+export async function getOrganizationContacts(
+  organizationId: string
+): Promise<Contact[]> {
+  const supabase = await createClient();
+
+  const { data, error } = await supabase
+    .from("contacts")
+    .select("*")
+    .eq("organization_id", organizationId)
+    .order("contact_type")
+    .order("name");
+
+  if (error) {
+    console.error("Error fetching contacts:", error);
+    return [];
+  }
+
+  return data ?? [];
 }
 
 export async function getOrganizationCountByState(

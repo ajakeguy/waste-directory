@@ -110,10 +110,19 @@ function cleanPhone(raw: string): string | null {
 
 type ParsedRow = {
   company: string;
+  contact: string;
   town: string;
   state: string;
   phone: string;
   wasteType: string;
+};
+
+type ContactInsert = {
+  organization_id: string;
+  name: string;
+  contact_type: string;
+  source: string;
+  verified: boolean;
 };
 
 async function fetchAndParse(): Promise<ParsedRow[]> {
@@ -147,6 +156,7 @@ async function fetchAndParse(): Promise<ParsedRow[]> {
     if (cells.length < 9) continue; // skip header / malformed rows
 
     const company = cells[1].text.trim();
+    const contact = cells[2].text.trim();
     const town = cells[4].text.trim();
     const state = cells[5].text.trim().toUpperCase();
     const phone = cells[6].text.trim();
@@ -154,7 +164,7 @@ async function fetchAndParse(): Promise<ParsedRow[]> {
 
     if (!company) continue;
 
-    results.push({ company, town, state, phone, wasteType });
+    results.push({ company, contact, town, state, phone, wasteType });
   }
 
   return results;
@@ -200,6 +210,8 @@ async function main() {
   // 3. Build org objects and generate slugs
   const candidates: OrgInsert[] = [];
   const seenSlugs = new Set<string>();
+  // slug → contact name (first occurrence per slug, for contact import)
+  const slugToContact = new Map<string, string>();
 
   for (const row of filtered) {
     const slug = slugify(row.company, row.town);
@@ -215,6 +227,9 @@ async function main() {
       continue;
     }
     seenSlugs.add(slug);
+
+    // Store contact name keyed by slug for use after org IDs are known
+    if (row.contact) slugToContact.set(slug, row.contact);
 
     candidates.push({
       name: row.company,
@@ -260,14 +275,7 @@ async function main() {
   );
 
   if (newOrgs.length === 0) {
-    console.log("\nAll records already exist — nothing to insert.");
-    console.log("\n=== Summary ===");
-    console.log(`Total found    : ${allRows.length}`);
-    console.log(`Solid waste (S): ${filtered.length}`);
-    console.log(`Already existed: ${existingSlugs.size}`);
-    console.log(`Newly inserted : 0`);
-    console.log(`Errors         : 0`);
-    return;
+    console.log("\nAll org records already exist — checking contacts only.");
   }
 
   // 5. Insert in batches of 50
@@ -294,12 +302,87 @@ async function main() {
     }
   }
 
-  // 6. Summary
+  // 6. Import contacts for all candidate orgs (new + pre-existing)
+  // Fetch org IDs for every slug we processed (both existing and just-inserted)
+  const allSlugsWithContacts = [...slugToContact.keys()];
+  let contactsInserted = 0;
+  let contactsExisted = 0;
+
+  if (allSlugsWithContacts.length > 0) {
+    const { data: orgIdRows, error: orgIdErr } = await supabase
+      .from("organizations")
+      .select("id, slug")
+      .in("slug", allSlugsWithContacts);
+
+    if (orgIdErr) {
+      console.error("Failed to fetch org IDs for contact import:", orgIdErr.message);
+    } else {
+      const slugToOrgId = new Map(
+        (orgIdRows ?? []).map((r: { id: string; slug: string }) => [r.slug, r.id])
+      );
+
+      // Build contact candidates
+      const contactCandidates: ContactInsert[] = [];
+      for (const [slug, contactName] of slugToContact) {
+        const orgId = slugToOrgId.get(slug);
+        if (!orgId) continue;
+        contactCandidates.push({
+          organization_id: orgId,
+          name: contactName,
+          contact_type: "primary",
+          source: DATA_SOURCE,
+          verified: true,
+        });
+      }
+
+      // Check which contacts already exist (by org_id + name)
+      if (contactCandidates.length > 0) {
+        const orgIds = [...new Set(contactCandidates.map((c) => c.organization_id))];
+        const { data: existingContacts } = await supabase
+          .from("contacts")
+          .select("organization_id, name")
+          .in("organization_id", orgIds);
+
+        const existingContactSet = new Set(
+          (existingContacts ?? []).map(
+            (c: { organization_id: string; name: string }) =>
+              `${c.organization_id}|${c.name}`
+          )
+        );
+        contactsExisted = existingContactSet.size;
+
+        const newContacts = contactCandidates.filter(
+          (c) => !existingContactSet.has(`${c.organization_id}|${c.name}`)
+        );
+
+        // Insert in batches of 50
+        for (let i = 0; i < newContacts.length; i += BATCH) {
+          const batch = newContacts.slice(i, i + BATCH);
+          const { error: contactErr } = await supabase
+            .from("contacts")
+            .insert(batch);
+          if (contactErr) {
+            console.error(`  ✗ Contact batch insert failed: ${contactErr.message}`);
+            errors++;
+          } else {
+            contactsInserted += batch.length;
+          }
+        }
+      }
+
+      console.log(
+        `Contacts: ${contactsExisted} already existed, ${contactsInserted} newly inserted`
+      );
+    }
+  }
+
+  // 7. Summary
   console.log("\n=== Summary ===");
   console.log(`Total found    : ${allRows.length}`);
   console.log(`Solid waste (S): ${filtered.length}`);
-  console.log(`Already existed: ${existingSlugs.size}`);
-  console.log(`Newly inserted : ${inserted}`);
+  console.log(`Orgs existed   : ${existingSlugs.size}`);
+  console.log(`Orgs inserted  : ${inserted}`);
+  console.log(`Contacts ins.  : ${contactsInserted}`);
   console.log(`Errors         : ${errors}`);
 
   if (errors > 0) process.exit(1);
