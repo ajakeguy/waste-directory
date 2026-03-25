@@ -1,41 +1,93 @@
+/**
+ * app/haulers/[state]/page.tsx
+ *
+ * Handles two URL shapes under /haulers/:
+ *   /haulers/vermont          → state landing page
+ *   /haulers/some-org-slug    → hauler profile page
+ *
+ * Next.js only allows one dynamic segment folder at this path level, so
+ * both cases are handled here and branched on whether the segment matches
+ * a known state slug.
+ */
+
 import { Suspense } from "react";
 import { notFound } from "next/navigation";
+import Link from "next/link";
 import type { Metadata } from "next";
+import {
+  CheckCircle,
+  Phone,
+  Mail,
+  Globe,
+  MapPin,
+  ArrowLeft,
+} from "lucide-react";
+import { Badge } from "@/components/ui/badge";
 import { FilterSidebar } from "@/components/directory/FilterSidebar";
 import { OrganizationCard } from "@/components/directory/OrganizationCard";
-import { getOrganizations } from "@/lib/data/organizations";
-import { getSavedOrgIds } from "@/lib/data/saved-items";
 import { Skeleton } from "@/components/ui/skeleton";
+import {
+  getOrganizations,
+  getOrganizationBySlug,
+} from "@/lib/data/organizations";
+import { getSavedOrgIds } from "@/lib/data/saved-items";
 import { createClient } from "@/lib/supabase/server";
 import {
   STATE_SLUG_TO_CODE,
   STATE_SLUG_TO_NAME,
   VALID_STATE_SLUGS,
+  SERVICE_TYPE_LABELS,
 } from "@/types";
+
+// ── Shared types ──────────────────────────────────────────────────────────────
 
 type Props = {
   params: Promise<{ state: string }>;
   searchParams: Promise<{ service?: string | string[]; verified?: string }>;
 };
 
+// ── Metadata ──────────────────────────────────────────────────────────────────
+
 export async function generateMetadata({ params }: Props): Promise<Metadata> {
-  const { state: stateSlug } = await params;
-  const stateName = STATE_SLUG_TO_NAME[stateSlug];
-  if (!stateName) return {};
+  const { state: segment } = await params;
+
+  if (VALID_STATE_SLUGS.includes(segment)) {
+    const stateName = STATE_SLUG_TO_NAME[segment];
+    return {
+      title: `${stateName} Waste Haulers | WasteDirectory`,
+      description: `Find licensed waste haulers serving ${stateName}. Browse residential pickup, commercial services, roll-off containers, recycling, and more.`,
+      openGraph: {
+        title: `${stateName} Waste Haulers | WasteDirectory`,
+        description: `The complete directory of waste haulers in ${stateName}.`,
+      },
+    };
+  }
+
+  // Hauler profile
+  const org = await getOrganizationBySlug(segment);
+  if (!org) return {};
+
+  const serviceStates = org.service_area_states?.join(", ") ?? "";
+  const description =
+    org.description ??
+    `${org.name} is a licensed waste hauler${serviceStates ? ` serving ${serviceStates}` : ""}. Find contact info, services offered, and more.`;
 
   return {
-    title: `${stateName} Waste Haulers | WasteDirectory`,
-    description: `Find licensed waste haulers serving ${stateName}. Browse residential pickup, commercial services, roll-off containers, recycling, and more.`,
+    title: `${org.name} - Waste Hauler | WasteDirectory`,
+    description,
     openGraph: {
-      title: `${stateName} Waste Haulers | WasteDirectory`,
-      description: `The complete directory of waste haulers in ${stateName}.`,
+      title: `${org.name} | WasteDirectory`,
+      description,
     },
   };
 }
 
+// Pre-render state landing pages at build time; hauler profiles are ISR
 export function generateStaticParams() {
   return VALID_STATE_SLUGS.map((state) => ({ state }));
 }
+
+// ── State landing page ────────────────────────────────────────────────────────
 
 function ResultsSkeleton() {
   return (
@@ -99,25 +151,20 @@ async function StateResults({
   );
 }
 
-export default async function StateLandingPage({
-  params,
-  searchParams,
-}: Props) {
-  const { state: stateSlug } = await params;
-  const sp = await searchParams;
-
-  const stateCode = STATE_SLUG_TO_CODE[stateSlug];
-  const stateName = STATE_SLUG_TO_NAME[stateSlug];
+async function StateLandingPage({
+  segment,
+  services,
+  verified,
+}: {
+  segment: string;
+  services: string[];
+  verified: boolean;
+}) {
+  const stateCode = STATE_SLUG_TO_CODE[segment];
+  const stateName = STATE_SLUG_TO_NAME[segment];
 
   if (!stateCode || !stateName) notFound();
 
-  const services = sp.service
-    ? Array.isArray(sp.service)
-      ? sp.service
-      : [sp.service]
-    : [];
-
-  // Fetch count for the hero + current user in parallel
   const supabase = await createClient();
   const [allOrgs, { data: { user } }] = await Promise.all([
     getOrganizations({ state: stateCode }),
@@ -154,7 +201,7 @@ export default async function StateLandingPage({
               <StateResults
                 stateCode={stateCode}
                 services={services}
-                verified={sp.verified === "1"}
+                verified={verified}
                 userId={user?.id ?? null}
               />
             </Suspense>
@@ -163,4 +210,187 @@ export default async function StateLandingPage({
       </div>
     </div>
   );
+}
+
+// ── Hauler profile page ───────────────────────────────────────────────────────
+
+async function HaulerProfilePage({ segment }: { segment: string }) {
+  const org = await getOrganizationBySlug(segment);
+  if (!org) notFound();
+
+  const correctionSubject = encodeURIComponent(
+    `Correction suggestion: ${org.name}`
+  );
+  const correctionBody = encodeURIComponent(
+    `Hi,\n\nI'd like to suggest a correction for the following listing:\n\nCompany: ${org.name}\nSlug: ${org.slug}\n\nCorrection:\n`
+  );
+
+  return (
+    <div className="max-w-3xl mx-auto px-4 sm:px-6 py-8">
+      {/* Breadcrumb */}
+      <nav className="flex items-center gap-1.5 text-sm text-gray-500 mb-6">
+        <Link href="/directory" className="hover:text-[#2D6A4F] transition-colors">
+          Directory
+        </Link>
+        <span>/</span>
+        <span className="text-gray-700 truncate">{org.name}</span>
+      </nav>
+
+      {/* Company header */}
+      <div className="mb-6">
+        <div className="flex items-start gap-3 flex-wrap">
+          <h1 className="text-2xl sm:text-3xl font-bold text-gray-900 leading-tight">
+            {org.name}
+          </h1>
+          {org.verified && (
+            <Badge className="bg-[#2D6A4F]/10 text-[#2D6A4F] border-0 mt-1 shrink-0">
+              <CheckCircle className="size-3.5 mr-1" />
+              Verified
+            </Badge>
+          )}
+        </div>
+        {(org.city || org.state) && (
+          <p className="flex items-center gap-1.5 text-gray-500 mt-1.5">
+            <MapPin className="size-4 shrink-0" />
+            {[org.address, org.city, org.state, org.zip]
+              .filter(Boolean)
+              .join(", ")}
+          </p>
+        )}
+      </div>
+
+      {/* Contact info */}
+      <section className="bg-white rounded-xl border border-gray-200 p-5 mb-4">
+        <h2 className="font-semibold text-gray-900 mb-4">
+          Contact Information
+        </h2>
+        {!org.phone && !org.email && !org.website ? (
+          <p className="text-sm text-gray-400">
+            No contact information on file.
+          </p>
+        ) : (
+          <div className="space-y-3">
+            {org.phone && (
+              <div className="flex items-center gap-3 text-sm">
+                <Phone className="size-4 text-gray-400 shrink-0" />
+                <a
+                  href={`tel:${org.phone}`}
+                  className="text-gray-700 hover:text-[#2D6A4F] transition-colors"
+                >
+                  {org.phone}
+                </a>
+              </div>
+            )}
+            {org.email && (
+              <div className="flex items-center gap-3 text-sm">
+                <Mail className="size-4 text-gray-400 shrink-0" />
+                <a
+                  href={`mailto:${org.email}`}
+                  className="text-gray-700 hover:text-[#2D6A4F] transition-colors"
+                >
+                  {org.email}
+                </a>
+              </div>
+            )}
+            {org.website && (
+              <div className="flex items-center gap-3 text-sm">
+                <Globe className="size-4 text-gray-400 shrink-0" />
+                <a
+                  href={org.website}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-gray-700 hover:text-[#2D6A4F] transition-colors"
+                >
+                  {org.website.replace(/^https?:\/\//, "")}
+                </a>
+              </div>
+            )}
+          </div>
+        )}
+      </section>
+
+      {/* Services */}
+      {org.service_types && org.service_types.length > 0 && (
+        <section className="bg-white rounded-xl border border-gray-200 p-5 mb-4">
+          <h2 className="font-semibold text-gray-900 mb-3">
+            Services Offered
+          </h2>
+          <div className="flex flex-wrap gap-2">
+            {org.service_types.map((type) => (
+              <Badge key={type} variant="outline">
+                {SERVICE_TYPE_LABELS[type as keyof typeof SERVICE_TYPE_LABELS] ?? type}
+              </Badge>
+            ))}
+          </div>
+        </section>
+      )}
+
+      {/* Service area — ALL states shown as badges */}
+      {org.service_area_states && org.service_area_states.length > 0 && (
+        <section className="bg-white rounded-xl border border-gray-200 p-5 mb-4">
+          <h2 className="font-semibold text-gray-900 mb-3">Service Area</h2>
+          <div className="flex flex-wrap gap-2">
+            {org.service_area_states.map((s) => (
+              <Badge key={s} variant="secondary">
+                {s}
+              </Badge>
+            ))}
+          </div>
+        </section>
+      )}
+
+      {/* Description */}
+      {org.description && (
+        <section className="bg-white rounded-xl border border-gray-200 p-5 mb-4">
+          <h2 className="font-semibold text-gray-900 mb-3">About</h2>
+          <p className="text-sm text-gray-700 leading-relaxed">
+            {org.description}
+          </p>
+        </section>
+      )}
+
+      {/* Footer */}
+      <div className="flex items-center justify-between pt-6 border-t border-gray-100 mt-2">
+        <Link
+          href="/directory"
+          className="flex items-center gap-1.5 text-sm text-gray-500 hover:text-[#2D6A4F] transition-colors"
+        >
+          <ArrowLeft className="size-3.5" />
+          Back to directory
+        </Link>
+
+        <a
+          href={`mailto:hello@wastedirectory.com?subject=${correctionSubject}&body=${correctionBody}`}
+          className="text-sm text-gray-400 hover:text-gray-600 underline underline-offset-4"
+        >
+          Suggest a correction
+        </a>
+      </div>
+    </div>
+  );
+}
+
+// ── Route entry point ─────────────────────────────────────────────────────────
+
+export default async function HaulerOrStatePage({ params, searchParams }: Props) {
+  const { state: segment } = await params;
+  const sp = await searchParams;
+
+  if (VALID_STATE_SLUGS.includes(segment)) {
+    const services = sp.service
+      ? Array.isArray(sp.service)
+        ? sp.service
+        : [sp.service]
+      : [];
+
+    return (
+      <StateLandingPage
+        segment={segment}
+        services={services}
+        verified={sp.verified === "1"}
+      />
+    );
+  }
+
+  return <HaulerProfilePage segment={segment} />;
 }

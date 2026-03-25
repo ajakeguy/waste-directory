@@ -2,7 +2,7 @@ import Link from "next/link";
 import { CheckCircle, MapPin, Phone, Globe } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { SaveButton } from "@/components/directory/SaveButton";
-import { SERVICE_TYPE_LABELS, STATE_CODE_TO_SLUG } from "@/types";
+import { SERVICE_TYPE_LABELS } from "@/types";
 import type { Organization } from "@/types";
 
 type Props = {
@@ -14,8 +14,7 @@ type Props = {
 };
 
 export function OrganizationCard({ org, savedOrgIds, userId = null }: Props) {
-  const stateSlug = STATE_CODE_TO_SLUG[org.state] ?? org.state.toLowerCase();
-  const profileUrl = `/haulers/${stateSlug}/${org.slug}`;
+  const profileUrl = `/haulers/${org.slug}`;
   const isSaved = savedOrgIds?.has(org.id) ?? false;
 
   return (

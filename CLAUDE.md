@@ -272,7 +272,9 @@ unique(user\_id, item\_id)
 
 \- `/haulers/massachusetts` — Massachusetts haulers landing page
 
-\- `/haulers/\[state]/\[slug]` — Individual hauler profile
+\- `/haulers/\[slug]` — Individual hauler profile (slug-only, supports multi-state haulers)
+
+\- `/haulers/\[state]/\[slug]` — Legacy redirect → `/haulers/\[slug]`
 
 \- `/news` — News aggregation page
 
