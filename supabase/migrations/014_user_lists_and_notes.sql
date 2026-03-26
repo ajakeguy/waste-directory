@@ -1,35 +1,28 @@
--- Migration 014: User lists and notes for saved haulers
---
--- Adds user_lists table so users can organize saved haulers into named
--- collections, and adds list_id + notes columns to saved_items.
-
--- ── user_lists ────────────────────────────────────────────────────────────────
-
-CREATE TABLE user_lists (
-  id          uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
-  user_id     uuid        NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  name        text        NOT NULL,
+-- User-created lists to organize saved haulers
+CREATE TABLE IF NOT EXISTS user_lists (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid references users(id) on delete cascade,
+  name text not null,
   description text,
-  color       text        NOT NULL DEFAULT '#2D6A4F',
-  created_at  timestamptz NOT NULL DEFAULT now(),
-  updated_at  timestamptz NOT NULL DEFAULT now()
+  color text default '#2D6A4F',
+  created_at timestamptz default now(),
+  updated_at timestamptz default now()
 );
 
-CREATE INDEX user_lists_user_id_idx ON user_lists(user_id);
+CREATE INDEX IF NOT EXISTS user_lists_user_id_idx
+  ON user_lists(user_id);
 
 ALTER TABLE user_lists ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY "Users manage own lists"
   ON user_lists FOR ALL
-  USING (auth.uid() = user_id);
+  USING (auth.uid() = user_id)
+  WITH CHECK (auth.uid() = user_id);
 
--- ── saved_items additions ─────────────────────────────────────────────────────
-
+-- Add list_id and notes to saved_items
 ALTER TABLE saved_items
   ADD COLUMN IF NOT EXISTS list_id uuid
-    REFERENCES user_lists(id) ON DELETE SET NULL;
+    references user_lists(id) on delete set null;
 
 ALTER TABLE saved_items
   ADD COLUMN IF NOT EXISTS notes text;
-
-CREATE INDEX IF NOT EXISTS saved_items_list_id_idx ON saved_items(list_id);
