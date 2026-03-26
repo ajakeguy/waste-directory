@@ -3,35 +3,25 @@
 pipelines/nyc-bic-import/index.py
 
 Imports NYC Business Integrity Commission (BIC) licensed trade waste
-haulers from the official BIC approval list PDF.
+haulers from the NYC Open Data API.
 
-Only records with TYPE = "License" are imported (not Exempt or Registration).
+Only records with application_type = "License" are imported.
 
 Usage:
-    python pipelines/nyc-bic-import/index.py <path-to-pdf>
-    python pipelines/nyc-bic-import/index.py            # downloads from nyc.gov
+    python pipelines/nyc-bic-import/index.py
 
 Required env vars:
     SUPABASE_URL
     SUPABASE_SERVICE_ROLE_KEY
 
-PDF source:
-    https://www.nyc.gov/assets/bic/downloads/pdf/approved_list.pdf
+Data source:
+    https://data.cityofnewyork.us/resource/867j-5pgi.json
 """
 
 import sys
 import os
 import re
-import tempfile
 from datetime import datetime
-
-# Auto-install pdfplumber if not available
-try:
-    import pdfplumber
-except ImportError:
-    import subprocess
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "pdfplumber", "-q"])
-    import pdfplumber
 
 try:
     import requests
@@ -44,9 +34,10 @@ from supabase import create_client, Client
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
-BIC_PDF_URL = "https://www.nyc.gov/assets/bic/downloads/pdf/approved_list.pdf"
+API_URL    = "https://data.cityofnewyork.us/resource/867j-5pgi.json"
+PAGE_SIZE  = 1000
 DATA_SOURCE = "nyc_bic_license_2026"
-BATCH_SIZE = 50
+BATCH_SIZE  = 50
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -55,32 +46,18 @@ def slugify(name: str, city: str) -> str:
     combined = f"{name} {city}"
     combined = combined.lower()
     combined = re.sub(r"[^a-z0-9]+", "-", combined)
-    combined = combined.strip("-")
-    return combined
+    return combined.strip("-")
 
 
 def normalize_name(name: str) -> str:
     """Normalize company name for dedup matching."""
     name = name.lower()
     name = re.sub(r"[^a-z0-9 ]", "", name)
-    name = re.sub(r"\s+", " ", name).strip()
-    return name
+    return re.sub(r"\s+", " ", name).strip()
 
 
-def clean_cell(value) -> str:
-    """Strip whitespace and collapse embedded newlines in a cell value."""
-    if value is None:
-        return ""
-    return re.sub(r"\s+", " ", str(value)).strip()
-
-
-def clean_zip(raw: str) -> str:
-    """Remove trailing hyphen from truncated ZIP+4 codes like '10301-'."""
-    return raw.rstrip("-").strip()
-
-
-def clean_phone(raw: str) -> str | None:
-    """Normalize phone to NNN-NNN-NNNN format. Returns None for empty/invalid."""
+def clean_phone(raw: str | None) -> str | None:
+    """Normalize phone to NNN-NNN-NNNN. Returns None for empty/invalid."""
     if not raw:
         return None
     digits = re.sub(r"\D", "", raw)
@@ -92,98 +69,69 @@ def clean_phone(raw: str) -> str | None:
     return trimmed if trimmed else None
 
 
-def parse_date(raw: str) -> str | None:
-    """Convert MM/DD/YYYY to ISO YYYY-MM-DD. Returns None if unparseable."""
+def iso_date(raw: str | None) -> str | None:
+    """
+    Return the date portion of an ISO datetime string (YYYY-MM-DD).
+    The NYC Open Data API returns dates as 'YYYY-MM-DD' or 'YYYY-MM-DDTHH:MM:SS.000'.
+    """
     if not raw:
         return None
-    m = re.match(r"(\d{1,2})/(\d{1,2})/(\d{4})", raw.strip())
-    if m:
-        return f"{m.group(3)}-{m.group(1).zfill(2)}-{m.group(2).zfill(2)}"
-    return None
+    return raw[:10]  # slice to YYYY-MM-DD
 
 
-# ── PDF download ──────────────────────────────────────────────────────────────
-
-def download_pdf(url: str) -> str:
-    """Download PDF to a temp file and return the path."""
-    print(f"  Downloading PDF from {url} ...")
-    resp = requests.get(
-        url,
-        headers={"User-Agent": "WasteDirectory-DataImport/1.0"},
-        timeout=60,
-    )
-    resp.raise_for_status()
-    tmp = tempfile.NamedTemporaryFile(suffix=".pdf", delete=False)
-    tmp.write(resp.content)
-    tmp.close()
-    print(f"  Downloaded {len(resp.content):,} bytes → {tmp.name}")
-    return tmp.name
+def str_or_none(value) -> str | None:
+    """Return stripped string or None for empty/null values."""
+    if value is None:
+        return None
+    s = str(value).strip()
+    return s if s else None
 
 
-# ── PDF parsing ───────────────────────────────────────────────────────────────
+def float_or_none(value) -> float | None:
+    """Return float or None."""
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
-def parse_pdf(pdf_path: str) -> list[dict]:
+
+# ── API fetch ─────────────────────────────────────────────────────────────────
+
+def fetch_all_records() -> list[dict]:
     """
-    Extract all records from the BIC approval list PDF.
+    Paginate through the NYC Open Data BIC endpoint and return all rows.
 
-    Uses pdfplumber's extract_tables() for reliable column separation.
-    The PDF has 10 columns:
-        BIC NUMBER | ACCOUNT NAME | TRADE NAME | ADDRESS | CITY |
-        STATE | ZIP | PHONE | EXPIRATION DATE | TYPE
-
-    Quirks handled:
-    - Header row only appears on page 1 (detected and skipped by column name)
-    - Footer rows contain "nyc.gov/bic" / "list current" (skipped)
-    - Multi-line cell values (CITY, PHONE) are collapsed to single spaces
-    - ZIP codes may have trailing hyphens ('10301-') — stripped
+    Uses $limit / $offset pagination until an empty page is returned.
+    The API field names (verified from live data):
+        bic_number, account_name, address, city, state, postcode,
+        phone, email, application_type, expiration_date,
+        latitude, longitude
     """
-    records = []
+    all_rows: list[dict] = []
+    offset = 0
+    session = requests.Session()
+    session.headers.update({"User-Agent": "WasteDirectory-DataImport/1.0"})
 
-    with pdfplumber.open(pdf_path) as pdf:
-        print(f"  PDF pages: {len(pdf.pages)}")
+    while True:
+        resp = session.get(
+            API_URL,
+            params={"$limit": PAGE_SIZE, "$offset": offset},
+            timeout=30,
+        )
+        resp.raise_for_status()
+        page = resp.json()
 
-        for page_num, page in enumerate(pdf.pages, start=1):
-            tables = page.extract_tables()
-            for table in tables:
-                if not table:
-                    continue
-                for row in table:
-                    # Need at least 10 columns
-                    if not row or len(row) < 10:
-                        continue
+        if not page:
+            break
 
-                    # Skip header row (only on page 1)
-                    if row[0] and clean_cell(row[0]).upper() == "BIC NUMBER":
-                        continue
+        all_rows.extend(page)
+        print(f"  Fetched {len(all_rows):,} records (page offset {offset}) ...")
 
-                    # Skip footer rows (page number / URL line)
-                    row_text = " ".join(str(c) for c in row if c)
-                    if "nyc.gov/bic" in row_text.lower() or "list current" in row_text.lower():
-                        continue
+        if len(page) < PAGE_SIZE:
+            break
+        offset += PAGE_SIZE
 
-                    # Skip completely empty rows
-                    if not any(row):
-                        continue
-
-                    bic_number = clean_cell(row[0])
-                    if not bic_number.upper().startswith("BIC-"):
-                        continue  # Not a real data row
-
-                    record = {
-                        "bic_number":      bic_number.upper(),
-                        "account_name":    clean_cell(row[1]),
-                        "trade_name":      clean_cell(row[2]),
-                        "address":         clean_cell(row[3]),
-                        "city":            clean_cell(row[4]),
-                        "state":           clean_cell(row[5]) or "NY",
-                        "zip":             clean_zip(clean_cell(row[6])),
-                        "phone":           clean_phone(clean_cell(row[7])),
-                        "expiration_date": parse_date(clean_cell(row[8])),
-                        "type":            clean_cell(row[9]),
-                    }
-                    records.append(record)
-
-    return records
+    return all_rows
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
@@ -192,23 +140,9 @@ def main() -> None:
     print("=== WasteDirectory — NYC BIC License Importer ===")
     print(datetime.utcnow().isoformat())
 
-    # PDF path: use argument if given, otherwise download from nyc.gov
-    tmp_pdf = None
-    if len(sys.argv) >= 2:
-        pdf_path = sys.argv[1]
-        print(f"\nUsing local PDF: {pdf_path}")
-    else:
-        print("\nNo PDF path provided — downloading from nyc.gov ...")
-        try:
-            pdf_path = download_pdf(BIC_PDF_URL)
-            tmp_pdf = pdf_path  # remember to clean up
-        except Exception as exc:
-            print(f"Failed to download PDF: {exc}", file=sys.stderr)
-            sys.exit(1)
-
     # Supabase credentials
-    supabase_url = os.environ.get("SUPABASE_URL")
-    service_role_key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
+    supabase_url      = os.environ.get("SUPABASE_URL")
+    service_role_key  = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
     if not supabase_url or not service_role_key:
         print(
             "Missing required env vars: SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY",
@@ -216,43 +150,44 @@ def main() -> None:
         )
         sys.exit(1)
 
-    # ── 1. Parse PDF ──────────────────────────────────────────────────────────
-    print(f"\nParsing PDF: {pdf_path}")
+    # ── 1. Fetch from NYC Open Data API ───────────────────────────────────────
+    print(f"\nFetching data from NYC Open Data API ...")
+    print(f"  {API_URL}")
     try:
-        all_records = parse_pdf(pdf_path)
+        all_records = fetch_all_records()
     except Exception as exc:
-        print(f"Failed to parse PDF: {exc}", file=sys.stderr)
+        print(f"Failed to fetch from API: {exc}", file=sys.stderr)
         sys.exit(1)
-    finally:
-        if tmp_pdf and os.path.exists(tmp_pdf):
-            os.unlink(tmp_pdf)
 
-    print(f"  Total records parsed: {len(all_records)}")
+    print(f"  Total records fetched: {len(all_records)}")
 
     # ── 2. Filter to License type only ────────────────────────────────────────
-    license_records = [r for r in all_records if r["type"].lower() == "license"]
+    license_records = [
+        r for r in all_records
+        if str(r.get("application_type", "")).strip().lower() == "license"
+    ]
     skipped_type = len(all_records) - len(license_records)
-    print(f"  License type only:    {len(license_records)}  ({skipped_type} Exempt/Registration skipped)")
+    print(f"  License type only:     {len(license_records)}  ({skipped_type} non-License skipped)")
 
     if not license_records:
-        print("\nNo License-type records found — check PDF structure.")
+        print("\nNo License-type records found.")
         return
 
     # ── 3. Connect to Supabase ────────────────────────────────────────────────
     supabase: Client = create_client(supabase_url, service_role_key)
 
     # ── 4. Load existing orgs for name-match dedup ────────────────────────────
-    print("\nLoading existing organizations for dedup...")
+    print("\nLoading existing organizations for dedup ...")
     existing_name_map: dict[str, dict] = {}
-    existing_slug_set: set[str] = set()
-    page_size = 1000
-    offset = 0
+    existing_slug_set: set[str]        = set()
+    db_page_size = 1000
+    db_offset    = 0
 
     while True:
         result = (
             supabase.table("organizations")
             .select("id, name, slug, service_area_states")
-            .range(offset, offset + page_size - 1)
+            .range(db_offset, db_offset + db_page_size - 1)
             .execute()
         )
         for org in result.data:
@@ -261,21 +196,21 @@ def main() -> None:
                 existing_name_map[key] = org
             if org.get("slug"):
                 existing_slug_set.add(org["slug"])
-        if len(result.data) < page_size:
+        if len(result.data) < db_page_size:
             break
-        offset += page_size
+        db_offset += db_page_size
 
     print(f"  Loaded {len(existing_name_map)} existing organizations")
 
     # ── 5. Classify records ───────────────────────────────────────────────────
-    to_update:       list[tuple[dict, dict]] = []  # (existing_org, record)
+    to_update:       list[tuple[dict, dict]] = []  # (existing_org, api_record)
     already_existed: list[dict]              = []
     to_insert:       list[dict]              = []
     seen_slugs:      set[str]               = set()
     skipped_no_name  = 0
 
-    for record in license_records:
-        account_name = record["account_name"].strip()
+    for rec in license_records:
+        account_name = str_or_none(rec.get("account_name")) or ""
         if not account_name:
             skipped_no_name += 1
             continue
@@ -286,13 +221,13 @@ def main() -> None:
         if existing:
             current_states = existing.get("service_area_states") or []
             if "NY" not in current_states:
-                to_update.append((existing, record))
+                to_update.append((existing, rec))
             else:
                 already_existed.append(existing)
             continue
 
         # New record — generate a unique slug
-        city = record["city"] or ""
+        city = str_or_none(rec.get("city")) or ""
         base_slug = slugify(account_name, city)
         if not base_slug:
             skipped_no_name += 1
@@ -305,26 +240,23 @@ def main() -> None:
             counter += 1
         seen_slugs.add(slug)
 
-        trade_name = record["trade_name"].strip() if record["trade_name"] else ""
-        description = (
-            trade_name
-            if trade_name and normalize_name(trade_name) != name_key
-            else None
-        )
+        state = str_or_none(rec.get("state")) or "NY"
 
         to_insert.append({
             "name":                account_name,
             "slug":                slug,
             "org_type":            "hauler",
-            "description":         description,
-            "phone":               record["phone"],
-            "address":             record["address"] or None,
+            "phone":               clean_phone(str_or_none(rec.get("phone"))),
+            "email":               str_or_none(rec.get("email")),
+            "address":             str_or_none(rec.get("address")),
             "city":                city or None,
-            "state":               record["state"],
-            "zip":                 record["zip"] or None,
-            "hq_state":            record["state"],
-            "license_number":      record["bic_number"],
-            "license_expiry":      record["expiration_date"],
+            "state":               state,
+            "zip":                 str_or_none(rec.get("postcode")),
+            "hq_state":            state,
+            "lat":                 float_or_none(rec.get("latitude")),
+            "lng":                 float_or_none(rec.get("longitude")),
+            "license_number":      str_or_none(rec.get("bic_number")),
+            "license_expiry":      iso_date(str_or_none(rec.get("expiration_date"))),
             "service_types":       ["commercial"],
             "service_area_states": ["NY"],
             "verified":            True,
@@ -340,13 +272,13 @@ def main() -> None:
 
     # ── 6. Update service_area_states for name-matched orgs ───────────────────
     update_errors = 0
-    for existing, record in to_update:
+    for existing, rec in to_update:
         current_states = existing.get("service_area_states") or []
         try:
             supabase.table("organizations").update({
                 "service_area_states": list(current_states) + ["NY"],
-                "license_number":      record["bic_number"],
-                "license_expiry":      record["expiration_date"],
+                "license_number":      str_or_none(rec.get("bic_number")),
+                "license_expiry":      iso_date(str_or_none(rec.get("expiration_date"))),
             }).eq("id", existing["id"]).execute()
             print(f"  ✓ Updated {existing['slug']} — added NY to service_area_states")
         except Exception as exc:
@@ -354,9 +286,9 @@ def main() -> None:
             update_errors += 1
 
     # ── 7. Slug dedup against DB then insert ──────────────────────────────────
-    insert_errors = 0
+    insert_errors  = 0
     newly_inserted = 0
-    slug_dupes = 0
+    slug_dupes     = 0
 
     if to_insert:
         slugs_to_check = [o["slug"] for o in to_insert]
@@ -366,17 +298,16 @@ def main() -> None:
             .in_("slug", slugs_to_check)
             .execute()
         )
-        db_slugs = {row["slug"] for row in result.data}
+        db_slugs   = {row["slug"] for row in result.data}
         slug_dupes = len(db_slugs)
-        new_orgs = [o for o in to_insert if o["slug"] not in db_slugs]
+        new_orgs   = [o for o in to_insert if o["slug"] not in db_slugs]
 
         if slug_dupes:
             print(f"  Slug-matched to existing (skipped): {slug_dupes}")
         print(f"  Net new to insert after slug dedup: {len(new_orgs)}")
 
-        # Insert in batches of BATCH_SIZE
         for i in range(0, len(new_orgs), BATCH_SIZE):
-            batch = new_orgs[i : i + BATCH_SIZE]
+            batch     = new_orgs[i : i + BATCH_SIZE]
             batch_num = i // BATCH_SIZE + 1
             try:
                 supabase.table("organizations").insert(batch).execute()
@@ -389,7 +320,7 @@ def main() -> None:
     # ── 8. Summary ────────────────────────────────────────────────────────────
     total_errors = update_errors + insert_errors
     print("\n=== Summary ===")
-    print(f"  Total parsed     : {len(all_records)}")
+    print(f"  Total fetched    : {len(all_records)}")
     print(f"  License type     : {len(license_records)}")
     print(f"  Name-matched     : {len(to_update) + len(already_existed)}")
     print(f"  Already existed  : {len(already_existed)}")
