@@ -115,6 +115,9 @@ export function SaveButton({ orgId, orgName, initialSaved, userId }: Props) {
       });
 
       if (!res.ok) {
+        let errBody = "(no body)";
+        try { errBody = await res.text(); } catch { /* ignore */ }
+        console.error(`[SaveButton] POST /api/saved failed ${res.status}:`, errBody);
         setSaved(false);
         return;
       }
@@ -123,7 +126,8 @@ export function SaveButton({ orgId, orgName, initialSaved, userId }: Props) {
       setCurrentListId(data.list_id ?? null);
       openPopover();
       router.refresh();
-    } catch {
+    } catch (err) {
+      console.error("[SaveButton] POST /api/saved threw:", err);
       setSaved(false);
     } finally {
       setPending(false);
@@ -137,13 +141,21 @@ export function SaveButton({ orgId, orgName, initialSaved, userId }: Props) {
     setPending(true);
 
     try {
-      await fetch("/api/saved", {
+      const res = await fetch("/api/saved", {
         method: "DELETE",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ org_id: orgId }),
       });
-      router.refresh();
-    } catch {
+      if (!res.ok) {
+        let errBody = "(no body)";
+        try { errBody = await res.text(); } catch { /* ignore */ }
+        console.error(`[SaveButton] DELETE /api/saved failed ${res.status}:`, errBody);
+        setSaved(true); // revert
+      } else {
+        router.refresh();
+      }
+    } catch (err) {
+      console.error("[SaveButton] DELETE /api/saved threw:", err);
       setSaved(true);
     } finally {
       setPending(false);
