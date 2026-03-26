@@ -68,3 +68,35 @@ export const STATE_SLUG_TO_NAME: Record<string, string> = {
 }
 
 export const VALID_STATE_SLUGS = Object.keys(STATE_SLUG_TO_CODE)
+
+// ── User lists & saved items ───────────────────────────────────────────────────
+
+export type UserList = {
+  id: string
+  user_id: string
+  name: string
+  description: string | null
+  color: string
+  created_at: string
+  updated_at: string
+}
+
+export type SavedItem = {
+  id: string
+  user_id: string
+  item_type: string
+  item_id: string
+  list_id: string | null
+  notes: string | null
+  created_at: string
+}
+
+/** A saved item with its org and (optional) list data joined in. */
+export type SavedItemWithOrg = {
+  id: string
+  item_id: string
+  list_id: string | null
+  notes: string | null
+  org: Organization
+  list: Pick<UserList, "id" | "name" | "color"> | null
+}
