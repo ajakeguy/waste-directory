@@ -1,0 +1,40 @@
+name: NYC BIC License Sync
+
+on:
+  # Run on the 4th of each month at 3am UTC
+  schedule:
+    - cron: "0 3 4 * *"
+  # Allow manual runs from the GitHub Actions UI
+  workflow_dispatch:
+
+jobs:
+  import-nyc-bic:
+    name: Download and import NYC BIC licensed trade waste haulers
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Python dependencies
+        run: pip install pdfplumber supabase
+
+      - name: Download BIC approval list PDF
+        run: |
+          curl -fL \
+            -A "WasteDirectory-DataImport/1.0" \
+            -o bic_approved_list.pdf \
+            "https://www.nyc.gov/assets/bic/downloads/pdf/approved_list.pdf"
+          echo "Downloaded $(wc -c < bic_approved_list.pdf) bytes"
+
+      - name: Run NYC BIC importer
+        run: python pipelines/nyc-bic-import/index.py bic_approved_list.pdf
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
