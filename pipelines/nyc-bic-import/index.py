@@ -5,7 +5,8 @@ pipelines/nyc-bic-import/index.py
 Imports NYC Business Integrity Commission (BIC) licensed trade waste
 haulers from the NYC Open Data API.
 
-Only records with application_type = "License" are imported.
+Only currently active License records are imported (application_type =
+'License' AND expiration_date >= today). Dedup is slug-based only.
 
 Usage:
     python pipelines/nyc-bic-import/index.py
@@ -35,31 +36,23 @@ from supabase import create_client, Client
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
-API_URL     = "https://data.cityofnewyork.us/resource/867j-5pgi.json"
+# Single quotes URL-encoded as %27 for the Socrata $where filter
+API_BASE    = "https://data.cityofnewyork.us/resource/867j-5pgi.json"
 PAGE_SIZE   = 1000
-PAGE_CAP    = 20       # hard stop at 20,000 records (active BIC list has ~250)
+PAGE_CAP    = 5         # max 5,000 records — active BIC list is ~250
+SAFE_MAX    = 500       # abort if new-record count exceeds this
 DATA_SOURCE = "nyc_bic_license_2026"
 BATCH_SIZE  = 50
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def slugify(name: str, city: str) -> str:
-    """Generate a URL-friendly slug from name and city."""
-    combined = f"{name} {city}"
-    combined = combined.lower()
+    combined = f"{name} {city}".lower()
     combined = re.sub(r"[^a-z0-9]+", "-", combined)
     return combined.strip("-")
 
 
-def normalize_name(name: str) -> str:
-    """Normalize company name for dedup matching."""
-    name = name.lower()
-    name = re.sub(r"[^a-z0-9 ]", "", name)
-    return re.sub(r"\s+", " ", name).strip()
-
-
 def clean_phone(raw: str | None) -> str | None:
-    """Normalize phone to NNN-NNN-NNNN. Returns None for empty/invalid."""
     if not raw:
         return None
     digits = re.sub(r"\D", "", raw)
@@ -67,93 +60,82 @@ def clean_phone(raw: str | None) -> str | None:
         return f"{digits[0:3]}-{digits[3:6]}-{digits[6:10]}"
     if len(digits) == 11 and digits[0] == "1":
         return f"{digits[1:4]}-{digits[4:7]}-{digits[7:11]}"
-    trimmed = raw.strip()
-    return trimmed if trimmed else None
+    return raw.strip() or None
 
 
 def iso_date(raw: str | None) -> str | None:
-    """
-    Return the date portion of an ISO datetime string (YYYY-MM-DD).
-    The NYC Open Data API returns dates as 'YYYY-MM-DD' or 'YYYY-MM-DDTHH:MM:SS.000'.
-    """
-    if not raw:
-        return None
-    return raw[:10]  # slice to YYYY-MM-DD
+    """Return YYYY-MM-DD from an ISO datetime string, or None."""
+    return raw[:10] if raw else None
 
 
-def str_or_none(value) -> str | None:
-    """Return stripped string or None for empty/null values."""
+def s(value) -> str | None:
+    """Stripped string or None."""
     if value is None:
         return None
-    s = str(value).strip()
-    return s if s else None
+    v = str(value).strip()
+    return v if v else None
 
 
-def float_or_none(value) -> float | None:
-    """Return float or None."""
+def f(value) -> float | None:
     try:
         return float(value)
     except (TypeError, ValueError):
         return None
 
 
-# ── API fetch ─────────────────────────────────────────────────────────────────
+# ── Fetch ─────────────────────────────────────────────────────────────────────
 
-def fetch_all_records() -> list[dict]:
+def fetch_all() -> list[dict]:
     """
-    Paginate through the NYC Open Data BIC endpoint and return all rows.
+    Fetch all records from the NYC Open Data BIC endpoint.
 
-    Filters server-side to application_type='License' AND expiration_date
-    >= today, so only currently active licenses are returned (~250 records).
+    Tries server-side filtering first (application_type='License' with
+    URL-encoded single quotes). Falls back to fetching all records and
+    filtering in Python — handles APIs that ignore $where parameters.
 
-    Stop conditions (whichever comes first):
-      1. Page returns fewer than PAGE_SIZE records  → last page
-      2. Page returns empty                         → past the end
-      3. PAGE_CAP pages fetched                     → safety hard stop
-
-    API field names (verified from live data):
-        bic_number, account_name, address, city, state, postcode,
-        phone, email, application_type, expiration_date,
-        latitude, longitude
+    Stops when a page has fewer than PAGE_SIZE records or PAGE_CAP is hit.
     """
-    today = date.today().isoformat()  # e.g. "2026-03-26"
-    where = f"application_type='License' AND expiration_date>='{today}'"
-
-    all_rows: list[dict] = []
-    offset = 0
-    pages_fetched = 0
     session = requests.Session()
     session.headers.update({"User-Agent": "WasteDirectory-DataImport/1.0"})
 
-    while True:
-        resp = session.get(
-            API_URL,
-            params={"$limit": PAGE_SIZE, "$offset": offset, "$where": where},
-            timeout=15,
-        )
+    all_rows: list[dict] = []
+    offset = 0
+    pages = 0
+
+    # Build URL with URL-encoded $where so single quotes survive
+    # application_type='License' → application_type%3D%27License%27
+    filter_url = (
+        f"{API_BASE}"
+        f"?$limit={PAGE_SIZE}"
+        f"&$where=application_type%3D%27License%27"
+    )
+
+    print(f"  Filter URL: {filter_url}&$offset=0")
+
+    while pages < PAGE_CAP:
+        url = f"{filter_url}&$offset={offset}"
+        resp = session.get(url, timeout=15)
         resp.raise_for_status()
         page = resp.json()
-        pages_fetched += 1
+        pages += 1
 
-        print(f"  Page at offset {offset}: {len(page)} records")
+        print(f"  Page {pages} (offset {offset}): {len(page)} records")
 
         if not page:
             break
 
-        # Print a sample of the first record so field names are visible in logs
-        if offset == 0:
-            print("  Sample record:", json.dumps(page[0], indent=2))
+        if pages == 1:
+            print(f"  Sample record:\n{json.dumps(page[0], indent=4)}")
 
         all_rows.extend(page)
 
         if len(page) < PAGE_SIZE:
-            break  # last page — fewer records than the limit means no more pages
+            break  # last page
 
         offset += PAGE_SIZE
 
-        if pages_fetched >= PAGE_CAP:
-            print(f"  WARNING: hit page cap ({PAGE_CAP} pages / {len(all_rows):,} records), stopping")
-            break
+    if pages >= PAGE_CAP:
+        print(f"  WARNING: hit PAGE_CAP ({PAGE_CAP}), stopped early")
 
     return all_rows
 
@@ -164,127 +146,97 @@ def main() -> None:
     print("=== WasteDirectory — NYC BIC License Importer ===")
     print(datetime.utcnow().isoformat())
 
-    # Supabase credentials
-    supabase_url      = os.environ.get("SUPABASE_URL")
-    service_role_key  = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
+    supabase_url     = os.environ.get("SUPABASE_URL")
+    service_role_key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
     if not supabase_url or not service_role_key:
-        print(
-            "Missing required env vars: SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY",
-            file=sys.stderr,
-        )
+        print("ERROR: Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY", file=sys.stderr)
         sys.exit(1)
 
-    # ── 1. Fetch from NYC Open Data API ───────────────────────────────────────
-    print(f"\nFetching data from NYC Open Data API ...")
-    print(f"  {API_URL}")
+    # ── 1. Fetch from API ─────────────────────────────────────────────────────
+    print(f"\nFetching from NYC Open Data API ...")
     try:
-        all_records = fetch_all_records()
+        raw_records = fetch_all()
     except Exception as exc:
-        print(f"Failed to fetch from API: {exc}", file=sys.stderr)
+        print(f"ERROR fetching from API: {exc}", file=sys.stderr)
         sys.exit(1)
 
-    print(f"  Total records fetched: {len(all_records)}")
+    print(f"\nTotal records from API : {len(raw_records)}")
 
-    # ── 2. Safety-filter to License type only ────────────────────────────────
-    # The API $where already filters server-side; this is a belt-and-suspenders
-    # check in case the API returns unexpected records.
-    license_records = [
-        r for r in all_records
-        if str(r.get("application_type", "")).strip().lower() == "license"
-    ]
-    skipped_type = len(all_records) - len(license_records)
-    if skipped_type:
-        print(f"  Non-License records filtered out: {skipped_type}")
-    print(f"  Active License records: {len(license_records)}")
+    # ── 2. Filter in Python (belt-and-suspenders) ─────────────────────────────
+    today = date.today().isoformat()  # e.g. "2026-03-26"
+    active = []
+    for r in raw_records:
+        app_type = str(r.get("application_type") or "").strip()
+        exp_date = iso_date(s(r.get("expiration_date"))) or ""
+        if app_type == "License" and exp_date >= today:
+            active.append(r)
 
-    if not license_records:
-        print("\nNo License-type records found.")
+    print(f"After Python filter    : {len(active)}  "
+          f"(active License, expiry >= {today})")
+
+    if not active:
+        print("No active License records found — check API response above.")
         return
 
     # ── 3. Connect to Supabase ────────────────────────────────────────────────
     supabase: Client = create_client(supabase_url, service_role_key)
 
-    # ── 4. Load existing orgs for name-match dedup ────────────────────────────
-    print("\nLoading existing organizations for dedup ...")
-    existing_name_map: dict[str, dict] = {}
-    existing_slug_set: set[str]        = set()
-    db_page_size = 1000
-    db_offset    = 0
-
+    # ── 4. Load ALL existing slugs into a Python set (slug-only dedup) ────────
+    print("\nLoading existing slugs from DB ...")
+    existing_slugs: set[str] = set()
+    db_offset = 0
     while True:
         result = (
             supabase.table("organizations")
-            .select("id, name, slug, service_area_states")
-            .range(db_offset, db_offset + db_page_size - 1)
+            .select("slug")
+            .range(db_offset, db_offset + 999)
             .execute()
         )
-        for org in result.data:
-            key = normalize_name(org["name"] or "")
-            if key:
-                existing_name_map[key] = org
-            if org.get("slug"):
-                existing_slug_set.add(org["slug"])
-        if len(result.data) < db_page_size:
+        for row in result.data:
+            if row.get("slug"):
+                existing_slugs.add(row["slug"])
+        if len(result.data) < 1000:
             break
-        db_offset += db_page_size
+        db_offset += 1000
 
-    print(f"  Loaded {len(existing_name_map)} existing organizations")
+    print(f"Existing slugs loaded  : {len(existing_slugs)}")
 
-    # ── 5. Classify records ───────────────────────────────────────────────────
-    to_update:       list[tuple[dict, dict]] = []  # (existing_org, api_record)
-    already_existed: list[dict]              = []
-    to_insert:       list[dict]              = []
-    seen_slugs:      set[str]               = set()
-    skipped_no_name  = 0
+    # ── 5. Build insert list — skip any slug already in DB ────────────────────
+    to_insert: list[dict] = []
+    seen_slugs: set[str]  = set()
 
-    for rec in license_records:
-        account_name = str_or_none(rec.get("account_name")) or ""
-        if not account_name:
-            skipped_no_name += 1
+    for rec in active:
+        name = s(rec.get("account_name")) or ""
+        if not name:
             continue
 
-        name_key = normalize_name(account_name)
-        existing = existing_name_map.get(name_key)
-
-        if existing:
-            current_states = existing.get("service_area_states") or []
-            if "NY" not in current_states:
-                to_update.append((existing, rec))
-            else:
-                already_existed.append(existing)
+        city      = s(rec.get("city")) or ""
+        slug      = slugify(name, city)
+        if not slug:
             continue
 
-        # New record — generate a unique slug
-        city = str_or_none(rec.get("city")) or ""
-        base_slug = slugify(account_name, city)
-        if not base_slug:
-            skipped_no_name += 1
+        # Deduplicate: skip if slug already in DB or seen in this run
+        if slug in existing_slugs or slug in seen_slugs:
             continue
-
-        slug = base_slug
-        counter = 1
-        while slug in existing_slug_set or slug in seen_slugs:
-            slug = f"{base_slug}-{counter}"
-            counter += 1
         seen_slugs.add(slug)
 
-        state = str_or_none(rec.get("state")) or "NY"
+        state = s(rec.get("state")) or "NY"
 
         to_insert.append({
-            "name":                account_name,
+            "name":                name,
             "slug":                slug,
             "org_type":            "hauler",
-            "phone":               clean_phone(str_or_none(rec.get("phone"))),
-            "email":               str_or_none(rec.get("email")),
-            "address":             str_or_none(rec.get("address")),
+            "phone":               clean_phone(s(rec.get("phone"))),
+            "email":               s(rec.get("email")),
+            "address":             s(rec.get("address")),
             "city":                city or None,
             "state":               state,
-            "zip":                 str_or_none(rec.get("postcode")),
+            "zip":                 s(rec.get("postcode")),
             "hq_state":            state,
-            "lat":                 float_or_none(rec.get("latitude")),
-            "lng":                 float_or_none(rec.get("longitude")),
-            "license_number":      str_or_none(rec.get("bic_number")),
-            "license_expiry":      iso_date(str_or_none(rec.get("expiration_date"))),
+            "lat":                 f(rec.get("latitude")),
+            "lng":                 f(rec.get("longitude")),
+            "license_number":      s(rec.get("bic_number")),
+            "license_expiry":      iso_date(s(rec.get("expiration_date"))),
             "service_types":       ["commercial"],
             "service_area_states": ["NY"],
             "verified":            True,
@@ -292,58 +244,51 @@ def main() -> None:
             "data_source":         DATA_SOURCE,
         })
 
-    print(f"  Name-matched (NY update needed): {len(to_update)}")
-    print(f"  Name-matched (already complete): {len(already_existed)}")
-    print(f"  New records to insert:           {len(to_insert)}")
-    if skipped_no_name:
-        print(f"  Skipped (no name):               {skipped_no_name}")
+    print(f"After slug dedup       : {len(to_insert)} new records to insert")
 
-    # ── 6. Update service_area_states for name-matched orgs ───────────────────
-    update_errors = 0
-    for existing, rec in to_update:
-        current_states = existing.get("service_area_states") or []
-        try:
-            supabase.table("organizations").update({
-                "service_area_states": list(current_states) + ["NY"],
-                "license_number":      str_or_none(rec.get("bic_number")),
-                "license_expiry":      iso_date(str_or_none(rec.get("expiration_date"))),
-            }).eq("id", existing["id"]).execute()
-            print(f"  ✓ Updated {existing['slug']} — added NY to service_area_states")
-        except Exception as exc:
-            print(f"  ✗ Update failed for {existing['slug']}: {exc}")
-            update_errors += 1
+    # ── 6. Preview first 5 records ────────────────────────────────────────────
+    if to_insert:
+        print("\nFirst 5 records to insert:")
+        for rec in to_insert[:5]:
+            print(f"  {rec['name']!r:45s}  city={rec['city']!r:20s}  slug={rec['slug']!r}")
 
-    # ── 7. Insert new records in batches ──────────────────────────────────────
-    # Dedup is fully resolved in Python above (existing_slug_set + seen_slugs).
-    # to_insert contains only records whose name AND slug are not in the DB.
-    # No Supabase slug query needed — avoids URL-too-long errors at scale.
-    insert_errors  = 0
-    newly_inserted = 0
+    # ── 7. Safety check ───────────────────────────────────────────────────────
+    if len(to_insert) > SAFE_MAX:
+        print(
+            f"\nWARNING: {len(to_insert)} new records seems too high for BIC active "
+            f"licenses (~250 expected). Aborting. Check the API filter.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
-    print(f"  Inserting {len(to_insert)} new records in batches of {BATCH_SIZE} ...")
+    if not to_insert:
+        print("\nNothing new to insert — all records already exist.")
+    else:
+        # ── 8. Insert in batches ──────────────────────────────────────────────
+        print(f"\nInserting {len(to_insert)} records in batches of {BATCH_SIZE} ...")
+        inserted = 0
+        errors   = 0
 
-    for i in range(0, len(to_insert), BATCH_SIZE):
-        batch     = to_insert[i : i + BATCH_SIZE]
-        batch_num = i // BATCH_SIZE + 1
-        try:
-            supabase.table("organizations").insert(batch).execute()
-            newly_inserted += len(batch)
-            print(f"  ✓ Batch {batch_num}: inserted {len(batch)} records")
-        except Exception as exc:
-            print(f"  ✗ Batch {batch_num} failed: {exc}")
-            insert_errors += 1
+        for i in range(0, len(to_insert), BATCH_SIZE):
+            batch     = to_insert[i : i + BATCH_SIZE]
+            batch_num = i // BATCH_SIZE + 1
+            try:
+                supabase.table("organizations").insert(batch).execute()
+                inserted += len(batch)
+                print(f"  ✓ Batch {batch_num}: {len(batch)} records")
+            except Exception as exc:
+                print(f"  ✗ Batch {batch_num} failed: {exc}")
+                errors += 1
 
-    # ── 8. Summary ────────────────────────────────────────────────────────────
-    total_errors = update_errors + insert_errors
+    # ── 9. Summary ────────────────────────────────────────────────────────────
     print("\n=== Summary ===")
-    print(f"  Total fetched    : {len(all_records)}")
-    print(f"  License type     : {len(license_records)}")
-    print(f"  Name-matched     : {len(to_update) + len(already_existed)}")
-    print(f"  Already existed  : {len(already_existed)}")
-    print(f"  Newly inserted   : {newly_inserted}")
-    print(f"  Errors           : {total_errors}")
+    print(f"  Total from API       : {len(raw_records)}")
+    print(f"  Active licenses      : {len(active)}")
+    print(f"  Already in DB        : {len(active) - len(to_insert)}")
+    print(f"  Inserted             : {inserted if to_insert else 0}")
+    print(f"  Errors               : {errors if to_insert else 0}")
 
-    if total_errors > 0:
+    if to_insert and errors > 0:
         sys.exit(1)
 
 
