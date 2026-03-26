@@ -106,6 +106,19 @@ function cleanPhone(raw: string): string | null {
   return trimmed.length > 0 ? trimmed : null;
 }
 
+/**
+ * Normalise a company name for fuzzy matching.
+ * Lowercases, strips punctuation, and collapses whitespace so that
+ * "Casella Waste Mgmt, Inc." and "casella waste mgmt inc" compare equal.
+ */
+function normalizeName(name: string): string {
+  return name
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 // ── Fetch & parse ─────────────────────────────────────────────────────────────
 
 type ParsedRow = {
@@ -123,6 +136,17 @@ type ContactInsert = {
   contact_type: string;
   source: string;
   verified: boolean;
+};
+
+type ExistingOrg = {
+  id: string;
+  slug: string;
+  service_area_states: string[] | null;
+};
+
+type NameMatch = {
+  existingOrg: ExistingOrg;
+  contactName: string | null;
 };
 
 async function fetchAndParse(): Promise<ParsedRow[]> {
@@ -207,13 +231,56 @@ async function main() {
     return;
   }
 
-  // 3. Build org objects and generate slugs
+  // 3. Pre-check: load all existing active org names for fuzzy name matching.
+  // This prevents inserting duplicate records for companies we already have
+  // from manual seeding, even when their slugs differ slightly.
+  const { data: existingOrgRows, error: existingOrgErr } = await supabase
+    .from("organizations")
+    .select("id, name, slug, service_area_states")
+    .eq("active", true);
+
+  if (existingOrgErr) {
+    console.error("Failed to load existing orgs for name matching:", existingOrgErr.message);
+    process.exit(1);
+  }
+
+  // Build a map from normalised name → existing org record
+  const existingNameMap = new Map<string, ExistingOrg>();
+  for (const org of existingOrgRows ?? []) {
+    existingNameMap.set(normalizeName(org.name as string), {
+      id: org.id as string,
+      slug: org.slug as string,
+      service_area_states: org.service_area_states as string[] | null,
+    });
+  }
+
+  // 4. Build org candidates, routing name-matched rows to existing orgs
   const candidates: OrgInsert[] = [];
   const seenSlugs = new Set<string>();
-  // slug → contact name (first occurrence per slug, for contact import)
+  // slug → contact name (covers both new org slugs and existing org slugs)
   const slugToContact = new Map<string, string>();
+  // name-matched existing orgs that need service_area_states + contact handling
+  const nameMatches: NameMatch[] = [];
+  const matchedOrgIds = new Set<string>(); // deduplicate multi-row matches
 
   for (const row of filtered) {
+    const normalizedIncoming = normalizeName(row.company);
+    const existingOrg = existingNameMap.get(normalizedIncoming);
+
+    if (existingOrg) {
+      // Name match: route this record's contact/service area to the existing org
+      console.log(
+        `  Name match → skipping insert, updating existing: ${existingOrg.slug}`
+      );
+      if (!matchedOrgIds.has(existingOrg.id)) {
+        matchedOrgIds.add(existingOrg.id);
+        nameMatches.push({ existingOrg, contactName: row.contact || null });
+      }
+      // Always update contact with latest value for this org
+      if (row.contact) slugToContact.set(existingOrg.slug, row.contact);
+      continue;
+    }
+
     const slug = slugify(row.company, row.town);
 
     if (!slug) {
@@ -236,12 +303,9 @@ async function main() {
       slug,
       org_type: "hauler",
       phone: cleanPhone(row.phone),
-      // Use the company's actual city and state from the DEC database
-      // so "Fort Lee, NJ" stays "Fort Lee, NJ", not "Fort Lee, VT"
       city: row.town || null,
-      state: row.state || "VT",   // fallback to VT if column is empty
+      state: row.state || "VT",
       hq_state: row.state || null,
-      // All records get VT in service_area_states — VT permit = serves VT
       service_types: mapWasteTypes(row.wasteType),
       service_area_states: ["VT"],
       verified: true,
@@ -250,35 +314,54 @@ async function main() {
     });
   }
 
-  console.log(`Candidates after slug dedup: ${candidates.length}`);
+  console.log(
+    `Name-matched to existing: ${nameMatches.length}  |  New candidates: ${candidates.length}`
+  );
 
-  // 4. Check which slugs already exist in the DB
+  // 5a. Ensure VT is in service_area_states for name-matched existing orgs
+  for (const { existingOrg } of nameMatches) {
+    const current = existingOrg.service_area_states ?? [];
+    if (!current.includes("VT")) {
+      const { error: updateErr } = await supabase
+        .from("organizations")
+        .update({ service_area_states: [...current, "VT"] })
+        .eq("id", existingOrg.id);
+      if (updateErr) {
+        console.error(
+          `  ✗ Failed to update service_area_states for ${existingOrg.slug}: ${updateErr.message}`
+        );
+      } else {
+        console.log(`  Updated service_area_states for ${existingOrg.slug} to include VT`);
+      }
+    }
+  }
+
+  // 5b. Slug-dedup against DB for remaining candidates
   const slugsToCheck = candidates.map((c) => c.slug);
-  const { data: existingRows, error: checkErr } = await supabase
+  const { data: slugRows, error: slugCheckErr } = await supabase
     .from("organizations")
     .select("slug")
     .in("slug", slugsToCheck);
 
-  if (checkErr) {
-    console.error("Failed to query existing slugs:", checkErr.message);
+  if (slugCheckErr) {
+    console.error("Failed to query existing slugs:", slugCheckErr.message);
     process.exit(1);
   }
 
   const existingSlugs = new Set(
-    (existingRows ?? []).map((r: { slug: string }) => r.slug)
+    (slugRows ?? []).map((r: { slug: string }) => r.slug)
   );
-
   const newOrgs = candidates.filter((c) => !existingSlugs.has(c.slug));
 
   console.log(
-    `Already in DB: ${existingSlugs.size}  |  New to insert: ${newOrgs.length}`
+    `Slug-matched to existing: ${existingSlugs.size}  |  New to insert: ${newOrgs.length}`
   );
 
-  if (newOrgs.length === 0) {
-    console.log("\nAll org records already exist — checking contacts only.");
+  if (newOrgs.length === 0 && nameMatches.length === 0) {
+    console.log("\nAll records already exist — checking contacts only.");
   }
 
-  // 5. Insert in batches of 50
+  // 5c. Insert new orgs in batches of 50
   const BATCH = 50;
   let inserted = 0;
   let errors = 0;
@@ -380,7 +463,8 @@ async function main() {
   console.log("\n=== Summary ===");
   console.log(`Total found    : ${allRows.length}`);
   console.log(`Solid waste (S): ${filtered.length}`);
-  console.log(`Orgs existed   : ${existingSlugs.size}`);
+  console.log(`Name-matched   : ${nameMatches.length}`);
+  console.log(`Slug-matched   : ${existingSlugs.size}`);
   console.log(`Orgs inserted  : ${inserted}`);
   console.log(`Contacts ins.  : ${contactsInserted}`);
   console.log(`Errors         : ${errors}`);
