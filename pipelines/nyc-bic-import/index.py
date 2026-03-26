@@ -5,8 +5,12 @@ pipelines/nyc-bic-import/index.py
 Imports NYC Business Integrity Commission (BIC) licensed trade waste
 haulers from the NYC Open Data API.
 
-Only currently active License records are imported (application_type =
-'License' AND expiration_date >= today). Dedup is slug-based only.
+The API mixes historical and current records. Strategy:
+  1. Fetch all pages (PAGE_CAP max)
+  2. Group by bic_number, keep the most recent record per BIC number
+     (using export_date, falling back to created)
+  3. Filter to application_type == 'License' only
+  4. Slug-dedup against existing DB, insert new records in batches
 
 Usage:
     python pipelines/nyc-bic-import/index.py
@@ -23,7 +27,7 @@ import sys
 import os
 import re
 import json
-from datetime import datetime, date
+from datetime import datetime
 
 try:
     import requests
@@ -36,10 +40,9 @@ from supabase import create_client, Client
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
-# Single quotes URL-encoded as %27 for the Socrata $where filter
 API_BASE    = "https://data.cityofnewyork.us/resource/867j-5pgi.json"
 PAGE_SIZE   = 1000
-PAGE_CAP    = 5         # max 5,000 records — active BIC list is ~250
+PAGE_CAP    = 5         # max 5,000 records fetched total
 SAFE_MAX    = 500       # abort if new-record count exceeds this
 DATA_SOURCE = "nyc_bic_license_2026"
 BATCH_SIZE  = 50
@@ -83,38 +86,39 @@ def f(value) -> float | None:
         return None
 
 
+def sort_key(rec: dict) -> str:
+    """
+    Return a sortable string for recency comparison.
+    Prefers export_date, falls back to created, falls back to empty string.
+    Both fields are ISO datetime strings (YYYY-MM-DD or YYYY-MM-DDTHH:MM:SS),
+    so lexicographic sort is correct.
+    """
+    return s(rec.get("export_date")) or s(rec.get("created")) or ""
+
+
 # ── Fetch ─────────────────────────────────────────────────────────────────────
 
 def fetch_all() -> list[dict]:
     """
-    Fetch all records from the NYC Open Data BIC endpoint.
-
-    Tries server-side filtering first (application_type='License' with
-    URL-encoded single quotes). Falls back to fetching all records and
-    filtering in Python — handles APIs that ignore $where parameters.
-
-    Stops when a page has fewer than PAGE_SIZE records or PAGE_CAP is hit.
+    Fetch all pages from the NYC Open Data BIC endpoint.
+    No server-side filter — we handle dedup/filtering in Python.
+    Stops when a page returns fewer than PAGE_SIZE records or PAGE_CAP is hit.
     """
     session = requests.Session()
     session.headers.update({"User-Agent": "WasteDirectory-DataImport/1.0"})
 
     all_rows: list[dict] = []
     offset = 0
-    pages = 0
+    pages  = 0
 
-    # Build URL with URL-encoded $where so single quotes survive
-    # application_type='License' → application_type%3D%27License%27
-    filter_url = (
-        f"{API_BASE}"
-        f"?$limit={PAGE_SIZE}"
-        f"&$where=application_type%3D%27License%27"
-    )
-
-    print(f"  Filter URL: {filter_url}&$offset=0")
+    print(f"  Endpoint: {API_BASE}")
 
     while pages < PAGE_CAP:
-        url = f"{filter_url}&$offset={offset}"
-        resp = session.get(url, timeout=15)
+        resp = session.get(
+            API_BASE,
+            params={"$limit": PAGE_SIZE, "$offset": offset},
+            timeout=15,
+        )
         resp.raise_for_status()
         page = resp.json()
         pages += 1
@@ -135,7 +139,7 @@ def fetch_all() -> list[dict]:
         offset += PAGE_SIZE
 
     if pages >= PAGE_CAP:
-        print(f"  WARNING: hit PAGE_CAP ({PAGE_CAP}), stopped early")
+        print(f"  WARNING: hit PAGE_CAP ({PAGE_CAP} pages / {len(all_rows):,} records)")
 
     return all_rows
 
@@ -152,36 +156,51 @@ def main() -> None:
         print("ERROR: Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY", file=sys.stderr)
         sys.exit(1)
 
-    # ── 1. Fetch from API ─────────────────────────────────────────────────────
-    print(f"\nFetching from NYC Open Data API ...")
+    # ── 1. Fetch all records from API ─────────────────────────────────────────
+    print("\nFetching from NYC Open Data API ...")
     try:
         raw_records = fetch_all()
     except Exception as exc:
         print(f"ERROR fetching from API: {exc}", file=sys.stderr)
         sys.exit(1)
 
-    print(f"\nTotal records from API : {len(raw_records)}")
+    print(f"\nTotal fetched from API : {len(raw_records)}")
 
-    # ── 2. Filter in Python (belt-and-suspenders) ─────────────────────────────
-    today = date.today().isoformat()  # e.g. "2026-03-26"
-    active = []
-    for r in raw_records:
-        app_type = str(r.get("application_type") or "").strip()
-        exp_date = iso_date(s(r.get("expiration_date"))) or ""
-        if app_type == "License" and exp_date >= today:
-            active.append(r)
+    # ── 2. Deduplicate by BIC number — keep most recent record per BIC ────────
+    # Group all rows by bic_number, then keep the one with the latest
+    # export_date (or created as fallback). This collapses historical
+    # duplicates to one current record per company.
+    by_bic: dict[str, dict] = {}
+    no_bic = 0
+    for rec in raw_records:
+        bic = s(rec.get("bic_number"))
+        if not bic:
+            no_bic += 1
+            continue
+        existing = by_bic.get(bic)
+        if existing is None or sort_key(rec) > sort_key(existing):
+            by_bic[bic] = rec
 
-    print(f"After Python filter    : {len(active)}  "
-          f"(active License, expiry >= {today})")
+    print(f"Unique BIC numbers     : {len(by_bic)}"
+          + (f"  ({no_bic} records had no BIC number)" if no_bic else ""))
 
-    if not active:
-        print("No active License records found — check API response above.")
+    # ── 3. Filter to License type only ────────────────────────────────────────
+    license_records = [
+        rec for rec in by_bic.values()
+        if str(rec.get("application_type") or "").strip() == "License"
+    ]
+    skipped_type = len(by_bic) - len(license_records)
+    print(f"After License filter   : {len(license_records)}"
+          + (f"  ({skipped_type} non-License skipped)" if skipped_type else ""))
+
+    if not license_records:
+        print("No License records found after BIC dedup — check API response above.")
         return
 
-    # ── 3. Connect to Supabase ────────────────────────────────────────────────
+    # ── 4. Connect to Supabase ────────────────────────────────────────────────
     supabase: Client = create_client(supabase_url, service_role_key)
 
-    # ── 4. Load ALL existing slugs into a Python set (slug-only dedup) ────────
+    # ── 5. Load ALL existing slugs into a Python set ──────────────────────────
     print("\nLoading existing slugs from DB ...")
     existing_slugs: set[str] = set()
     db_offset = 0
@@ -201,22 +220,23 @@ def main() -> None:
 
     print(f"Existing slugs loaded  : {len(existing_slugs)}")
 
-    # ── 5. Build insert list — skip any slug already in DB ────────────────────
-    to_insert: list[dict] = []
-    seen_slugs: set[str]  = set()
+    # ── 6. Build insert list — slug dedup entirely in Python ─────────────────
+    to_insert:  list[dict] = []
+    seen_slugs: set[str]   = set()
+    skipped_slug = 0
 
-    for rec in active:
+    for rec in license_records:
         name = s(rec.get("account_name")) or ""
         if not name:
             continue
 
-        city      = s(rec.get("city")) or ""
-        slug      = slugify(name, city)
+        city = s(rec.get("city")) or ""
+        slug = slugify(name, city)
         if not slug:
             continue
 
-        # Deduplicate: skip if slug already in DB or seen in this run
         if slug in existing_slugs or slug in seen_slugs:
+            skipped_slug += 1
             continue
         seen_slugs.add(slug)
 
@@ -244,15 +264,16 @@ def main() -> None:
             "data_source":         DATA_SOURCE,
         })
 
-    print(f"After slug dedup       : {len(to_insert)} new records to insert")
+    print(f"After slug dedup       : {len(to_insert)} new records"
+          + (f"  ({skipped_slug} already in DB)" if skipped_slug else ""))
 
-    # ── 6. Preview first 5 records ────────────────────────────────────────────
+    # ── 7. Preview first 5 records ────────────────────────────────────────────
     if to_insert:
         print("\nFirst 5 records to insert:")
         for rec in to_insert[:5]:
             print(f"  {rec['name']!r:45s}  city={rec['city']!r:20s}  slug={rec['slug']!r}")
 
-    # ── 7. Safety check ───────────────────────────────────────────────────────
+    # ── 8. Safety check ───────────────────────────────────────────────────────
     if len(to_insert) > SAFE_MAX:
         print(
             f"\nWARNING: {len(to_insert)} new records seems too high for BIC active "
@@ -261,14 +282,14 @@ def main() -> None:
         )
         sys.exit(1)
 
+    # ── 9. Insert in batches ──────────────────────────────────────────────────
+    inserted = 0
+    errors   = 0
+
     if not to_insert:
         print("\nNothing new to insert — all records already exist.")
     else:
-        # ── 8. Insert in batches ──────────────────────────────────────────────
         print(f"\nInserting {len(to_insert)} records in batches of {BATCH_SIZE} ...")
-        inserted = 0
-        errors   = 0
-
         for i in range(0, len(to_insert), BATCH_SIZE):
             batch     = to_insert[i : i + BATCH_SIZE]
             batch_num = i // BATCH_SIZE + 1
@@ -280,15 +301,16 @@ def main() -> None:
                 print(f"  ✗ Batch {batch_num} failed: {exc}")
                 errors += 1
 
-    # ── 9. Summary ────────────────────────────────────────────────────────────
+    # ── 10. Summary ───────────────────────────────────────────────────────────
     print("\n=== Summary ===")
     print(f"  Total from API       : {len(raw_records)}")
-    print(f"  Active licenses      : {len(active)}")
-    print(f"  Already in DB        : {len(active) - len(to_insert)}")
-    print(f"  Inserted             : {inserted if to_insert else 0}")
-    print(f"  Errors               : {errors if to_insert else 0}")
+    print(f"  Unique BIC numbers   : {len(by_bic)}")
+    print(f"  License type         : {len(license_records)}")
+    print(f"  Already in DB        : {skipped_slug}")
+    print(f"  Inserted             : {inserted}")
+    print(f"  Errors               : {errors}")
 
-    if to_insert and errors > 0:
+    if errors > 0:
         sys.exit(1)
 
 
