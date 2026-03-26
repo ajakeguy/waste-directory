@@ -33,6 +33,7 @@ import {
   getOrganizationContacts,
 } from "@/lib/data/organizations";
 import { getSavedOrgIds } from "@/lib/data/saved-items";
+import { HaulerNotes } from "@/components/hauler/HaulerNotes";
 import { createClient } from "@/lib/supabase/server";
 import {
   STATE_SLUG_TO_CODE,
@@ -227,6 +228,30 @@ async function HaulerProfilePage({ segment }: { segment: string }) {
   const org = await getOrganizationBySlug(segment);
   if (!org) notFound();
 
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  // Fetch the user's saved item for this org (notes + save state)
+  let savedNote: string | null = null;
+  let isSaved = false;
+
+  if (user) {
+    const { data: savedRow } = await supabase
+      .from("saved_items")
+      .select("id, notes")
+      .eq("user_id", user.id)
+      .eq("item_id", org.id)
+      .eq("item_type", "organization")
+      .maybeSingle();
+
+    if (savedRow) {
+      isSaved = true;
+      savedNote = savedRow.notes ?? null;
+    }
+  }
+
   const orgContacts = await getOrganizationContacts(org.id);
 
   const correctionSubject = encodeURIComponent(
@@ -406,6 +431,14 @@ async function HaulerProfilePage({ segment }: { segment: string }) {
           </div>
         </section>
       )}
+
+      {/* My Notes — visible to logged-in users only */}
+      <HaulerNotes
+        orgId={org.id}
+        userId={user?.id ?? null}
+        isSaved={isSaved}
+        initialNote={savedNote}
+      />
 
       {/* Footer */}
       <div className="flex items-center justify-between pt-6 border-t border-gray-100 mt-2">
