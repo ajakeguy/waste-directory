@@ -21,6 +21,7 @@ Data source:
 import sys
 import os
 import re
+import json
 from datetime import datetime
 
 try:
@@ -34,8 +35,9 @@ from supabase import create_client, Client
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
-API_URL    = "https://data.cityofnewyork.us/resource/867j-5pgi.json"
-PAGE_SIZE  = 1000
+API_URL     = "https://data.cityofnewyork.us/resource/867j-5pgi.json"
+PAGE_SIZE   = 1000
+PAGE_CAP    = 10       # hard stop at 10,000 records (BIC list has ~250)
 DATA_SOURCE = "nyc_bic_license_2026"
 BATCH_SIZE  = 50
 
@@ -101,14 +103,19 @@ def fetch_all_records() -> list[dict]:
     """
     Paginate through the NYC Open Data BIC endpoint and return all rows.
 
-    Uses $limit / $offset pagination until an empty page is returned.
-    The API field names (verified from live data):
+    Stop conditions (whichever comes first):
+      1. Page returns fewer than PAGE_SIZE records  → last page
+      2. Page returns empty                         → past the end
+      3. PAGE_CAP pages fetched                     → safety hard stop
+
+    API field names (verified from live data):
         bic_number, account_name, address, city, state, postcode,
         phone, email, application_type, expiration_date,
         latitude, longitude
     """
     all_rows: list[dict] = []
     offset = 0
+    pages_fetched = 0
     session = requests.Session()
     session.headers.update({"User-Agent": "WasteDirectory-DataImport/1.0"})
 
@@ -116,20 +123,31 @@ def fetch_all_records() -> list[dict]:
         resp = session.get(
             API_URL,
             params={"$limit": PAGE_SIZE, "$offset": offset},
-            timeout=30,
+            timeout=15,
         )
         resp.raise_for_status()
         page = resp.json()
+        pages_fetched += 1
+
+        print(f"  Page at offset {offset}: {len(page)} records")
 
         if not page:
             break
 
+        # Print a sample of the first record so field names are visible in logs
+        if offset == 0:
+            print("  Sample record:", json.dumps(page[0], indent=2))
+
         all_rows.extend(page)
-        print(f"  Fetched {len(all_rows):,} records (page offset {offset}) ...")
 
         if len(page) < PAGE_SIZE:
-            break
+            break  # last page — fewer records than the limit means no more pages
+
         offset += PAGE_SIZE
+
+        if pages_fetched >= PAGE_CAP:
+            print(f"  WARNING: hit page cap ({PAGE_CAP} pages / {len(all_rows):,} records), stopping")
+            break
 
     return all_rows
 

@@ -11,7 +11,7 @@ jobs:
   import-nyc-bic:
     name: Import NYC BIC licensed trade waste haulers
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 15
 
     steps:
       - name: Checkout repository
