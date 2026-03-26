@@ -22,7 +22,7 @@ import sys
 import os
 import re
 import json
-from datetime import datetime
+from datetime import datetime, date
 
 try:
     import requests
@@ -37,7 +37,7 @@ from supabase import create_client, Client
 
 API_URL     = "https://data.cityofnewyork.us/resource/867j-5pgi.json"
 PAGE_SIZE   = 1000
-PAGE_CAP    = 10       # hard stop at 10,000 records (BIC list has ~250)
+PAGE_CAP    = 20       # hard stop at 20,000 records (active BIC list has ~250)
 DATA_SOURCE = "nyc_bic_license_2026"
 BATCH_SIZE  = 50
 
@@ -103,6 +103,9 @@ def fetch_all_records() -> list[dict]:
     """
     Paginate through the NYC Open Data BIC endpoint and return all rows.
 
+    Filters server-side to application_type='License' AND expiration_date
+    >= today, so only currently active licenses are returned (~250 records).
+
     Stop conditions (whichever comes first):
       1. Page returns fewer than PAGE_SIZE records  → last page
       2. Page returns empty                         → past the end
@@ -113,6 +116,9 @@ def fetch_all_records() -> list[dict]:
         phone, email, application_type, expiration_date,
         latitude, longitude
     """
+    today = date.today().isoformat()  # e.g. "2026-03-26"
+    where = f"application_type='License' AND expiration_date>='{today}'"
+
     all_rows: list[dict] = []
     offset = 0
     pages_fetched = 0
@@ -122,7 +128,7 @@ def fetch_all_records() -> list[dict]:
     while True:
         resp = session.get(
             API_URL,
-            params={"$limit": PAGE_SIZE, "$offset": offset},
+            params={"$limit": PAGE_SIZE, "$offset": offset, "$where": where},
             timeout=15,
         )
         resp.raise_for_status()
@@ -179,13 +185,17 @@ def main() -> None:
 
     print(f"  Total records fetched: {len(all_records)}")
 
-    # ── 2. Filter to License type only ────────────────────────────────────────
+    # ── 2. Safety-filter to License type only ────────────────────────────────
+    # The API $where already filters server-side; this is a belt-and-suspenders
+    # check in case the API returns unexpected records.
     license_records = [
         r for r in all_records
         if str(r.get("application_type", "")).strip().lower() == "license"
     ]
     skipped_type = len(all_records) - len(license_records)
-    print(f"  License type only:     {len(license_records)}  ({skipped_type} non-License skipped)")
+    if skipped_type:
+        print(f"  Non-License records filtered out: {skipped_type}")
+    print(f"  Active License records: {len(license_records)}")
 
     if not license_records:
         print("\nNo License-type records found.")
@@ -303,37 +313,25 @@ def main() -> None:
             print(f"  ✗ Update failed for {existing['slug']}: {exc}")
             update_errors += 1
 
-    # ── 7. Slug dedup against DB then insert ──────────────────────────────────
+    # ── 7. Insert new records in batches ──────────────────────────────────────
+    # Dedup is fully resolved in Python above (existing_slug_set + seen_slugs).
+    # to_insert contains only records whose name AND slug are not in the DB.
+    # No Supabase slug query needed — avoids URL-too-long errors at scale.
     insert_errors  = 0
     newly_inserted = 0
-    slug_dupes     = 0
 
-    if to_insert:
-        slugs_to_check = [o["slug"] for o in to_insert]
-        result = (
-            supabase.table("organizations")
-            .select("slug")
-            .in_("slug", slugs_to_check)
-            .execute()
-        )
-        db_slugs   = {row["slug"] for row in result.data}
-        slug_dupes = len(db_slugs)
-        new_orgs   = [o for o in to_insert if o["slug"] not in db_slugs]
+    print(f"  Inserting {len(to_insert)} new records in batches of {BATCH_SIZE} ...")
 
-        if slug_dupes:
-            print(f"  Slug-matched to existing (skipped): {slug_dupes}")
-        print(f"  Net new to insert after slug dedup: {len(new_orgs)}")
-
-        for i in range(0, len(new_orgs), BATCH_SIZE):
-            batch     = new_orgs[i : i + BATCH_SIZE]
-            batch_num = i // BATCH_SIZE + 1
-            try:
-                supabase.table("organizations").insert(batch).execute()
-                newly_inserted += len(batch)
-                print(f"  ✓ Batch {batch_num}: inserted {len(batch)} records")
-            except Exception as exc:
-                print(f"  ✗ Batch {batch_num} failed: {exc}")
-                insert_errors += 1
+    for i in range(0, len(to_insert), BATCH_SIZE):
+        batch     = to_insert[i : i + BATCH_SIZE]
+        batch_num = i // BATCH_SIZE + 1
+        try:
+            supabase.table("organizations").insert(batch).execute()
+            newly_inserted += len(batch)
+            print(f"  ✓ Batch {batch_num}: inserted {len(batch)} records")
+        except Exception as exc:
+            print(f"  ✗ Batch {batch_num} failed: {exc}")
+            insert_errors += 1
 
     # ── 8. Summary ────────────────────────────────────────────────────────────
     total_errors = update_errors + insert_errors
