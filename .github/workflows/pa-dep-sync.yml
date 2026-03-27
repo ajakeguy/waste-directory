@@ -1,0 +1,32 @@
+name: PA DEP WTSP Sync
+
+on:
+  # Run on the 5th of each month at 3am UTC
+  schedule:
+    - cron: "0 3 5 * *"
+  # Allow manual runs from the GitHub Actions UI
+  workflow_dispatch:
+
+jobs:
+  import-pa-dep:
+    name: Import PA DEP WTSP waste transportation authorizations
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Python dependencies
+        run: pip install requests pandas openpyxl supabase
+
+      - name: Run PA DEP WTSP importer
+        run: python pipelines/pa-dep-import/index.py
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
