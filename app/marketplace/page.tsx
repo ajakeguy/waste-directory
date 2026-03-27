@@ -70,7 +70,7 @@ async function ListingResults({
   if (priceMax) query = query.lte("price", parseFloat(priceMax));
 
   const { data } = await query;
-  const listings = (data ?? []) as EquipmentListing[];
+  const listings = (data ?? []) as unknown as EquipmentListing[];
 
   if (listings.length === 0) {
     return (

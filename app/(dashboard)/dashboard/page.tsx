@@ -86,7 +86,7 @@ export default async function DashboardPage() {
     .eq("user_id", user.id)
     .order("created_at", { ascending: false });
 
-  const myListings: EquipmentListing[] = (listingsData ?? []) as EquipmentListing[];
+  const myListings = (listingsData ?? []) as unknown as EquipmentListing[];
 
   return (
     <DashboardClient

@@ -60,7 +60,7 @@ export default async function ListingDetailPage({ params }: Props) {
     .maybeSingle();
 
   if (error || !data) notFound();
-  const listing = data as EquipmentListing;
+  const listing = data as unknown as EquipmentListing;
 
   const isOwner = user?.id === listing.user_id;
   const showContact = !!user;
