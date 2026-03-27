@@ -42,7 +42,9 @@ export default async function DashboardPage() {
     .eq("item_type", "organization")
     .order("created_at", { ascending: false });
 
-  const rows = (savedRows ?? []) as Array<{
+  // Supabase infers joined tables as arrays; use `unknown` to cast to the
+  // actual runtime shape (PostgREST returns the parent FK row as object | null).
+  const rows = (savedRows ?? []) as unknown as Array<{
     id: string;
     item_id: string;
     list_id: string | null;
