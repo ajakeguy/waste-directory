@@ -2,19 +2,26 @@
 """
 pipelines/ny-dec-import/index.py
 
-Attempts to import NY DEC Part 364 waste transporter permit holders.
+Attempts to locate and import NY DEC Part 364 waste transporter permit holders
+from NY Open Data (data.ny.gov).
 
-Tries three data sources in order — logs what each returns so we can
-debug and adapt. NEVER fails silently: if no data is found, the summary
-says so clearly and exits with code 0 (informational, not a crash).
+The original dataset ID (dnwv-xxci) was confirmed to not exist.
+This version probes three alternative dataset IDs in order, fetches a
+5-record sample from each, and logs:
+  - HTTP status code
+  - Column names from the response
+  - First record (full contents)
 
-Endpoints tried (in order):
-  1. NY Open Data Socrata API — dataset dnwv-xxci
-     https://data.ny.gov/resource/dnwv-xxci.json
-  2. NY Open Data rows.json endpoint
-     https://data.ny.gov/api/views/dnwv-xxci/rows.json
-  3. NY DEC eFACTS web search (HTML, read-only probe)
-     https://www.dec.ny.gov/cfmx/extapps/envapps/index.cfm?p=wasteTransporterSearch
+If one of the probes returns data that looks like waste transporter records,
+the pipeline will proceed to a full fetch + DB insert.
+
+If none are useful, a detailed diagnostic summary is printed and the
+script exits cleanly (exit 0) — never fails silently.
+
+Endpoints probed (in order):
+  1. https://data.ny.gov/resource/kazv-yi3p.json  (probe — verify this isn't BIC)
+  2. https://data.ny.gov/resource/p937-wjvj.json  (candidate: Part 364 transporters)
+  3. https://data.ny.gov/resource/w4pn-hx4j.json  (candidate: waste permits)
 
 Usage:
     python pipelines/ny-dec-import/index.py
@@ -49,37 +56,51 @@ except ImportError:
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
-# Primary: Socrata SoQL API, paginated
-SOCRATA_BASE  = "https://data.ny.gov/resource/dnwv-xxci.json"
+# Datasets to probe — listed with notes so the output is self-documenting
+PROBE_DATASETS = [
+    {
+        "id":    "kazv-yi3p",
+        "label": "Candidate 1 (kazv-yi3p) — verify not BIC duplicate",
+        "url":   "https://data.ny.gov/resource/kazv-yi3p.json",
+    },
+    {
+        "id":    "p937-wjvj",
+        "label": "Candidate 2 (p937-wjvj) — possible Part 364 transporters",
+        "url":   "https://data.ny.gov/resource/p937-wjvj.json",
+    },
+    {
+        "id":    "w4pn-hx4j",
+        "label": "Candidate 3 (w4pn-hx4j) — possible waste permits",
+        "url":   "https://data.ny.gov/resource/w4pn-hx4j.json",
+    },
+]
 
-# Fallback 1: Socrata rows.json
-ROWS_JSON_URL = "https://data.ny.gov/api/views/dnwv-xxci/rows.json"
+# Keywords that suggest a dataset is about waste transporters/permits
+USEFUL_KEYWORDS = {
+    "permit", "transporter", "waste", "hauler", "license", "carrier",
+    "part_364", "part364", "dec", "authorization",
+}
 
-# Fallback 2: NY DEC eFACTS web search (probe only — no machine-readable data)
-EFACTS_URL    = "https://www.dec.ny.gov/cfmx/extapps/envapps/index.cfm?p=wasteTransporterSearch"
+DATA_SOURCE = "ny_dec_part364_2026"
+SAFE_MAX    = 3000
+BATCH_SIZE  = 50
+PAGE_SIZE   = 1000
+PAGE_CAP    = 10
 
-DATA_SOURCE   = "ny_dec_part364_2026"
-SAFE_MAX      = 3000
-BATCH_SIZE    = 50
-PAGE_SIZE     = 1000
-PAGE_CAP      = 10     # max 10,000 records
-
-HTTP_HEADERS  = {
+HTTP_HEADERS = {
     "User-Agent": "WasteDirectory-DataImport/1.0",
     "Accept":     "application/json, */*",
 }
 
 # ── Field mapping ─────────────────────────────────────────────────────────────
-# For Socrata datasets the field names are unpredictable until we see them.
-# These aliases cover common NY Open Data naming patterns for transporter permits.
 
 FIELD_ALIASES: dict[str, list[str]] = {
     "permit_number":  ["permit_number", "permit_no", "permitnumber", "permit",
                        "certificate_number", "cert_no", "authorization_number",
-                       "transporter_id", "id"],
+                       "transporter_id", "license_number", "id"],
     "company_name":   ["company_name", "company", "business_name", "name",
                        "applicant_name", "permittee_name", "facility_name",
-                       "transporter_name", "entity_name"],
+                       "transporter_name", "entity_name", "owner_name"],
     "address":        ["address", "street_address", "address1", "mailing_address",
                        "street", "addr", "location_address"],
     "city":           ["city", "municipality", "location_city"],
@@ -94,7 +115,6 @@ FIELD_ALIASES: dict[str, list[str]] = {
 
 
 def find_field(record_keys: list[str], alias_key: str) -> str | None:
-    """Return the actual record key matching our alias, or None."""
     aliases = FIELD_ALIASES.get(alias_key, [alias_key])
     lower_map = {k.lower(): k for k in record_keys}
     for alias in aliases:
@@ -148,14 +168,118 @@ def slugify(name: str, city: str) -> str:
     return combined.strip("-")
 
 
-# ── Endpoint 1: Socrata JSON API ──────────────────────────────────────────────
+def score_usefulness(columns: list[str]) -> tuple[int, list[str]]:
+    """
+    Score how likely a dataset is to contain waste transporter data.
+    Returns (score, matched_keywords).
+    Higher score = more likely to be useful.
+    """
+    all_text = " ".join(c.lower() for c in columns)
+    matched = [kw for kw in USEFUL_KEYWORDS if kw in all_text]
+    return len(matched), matched
 
-def try_socrata() -> list[dict] | None:
+
+# ── Probe function ────────────────────────────────────────────────────────────
+
+def probe_dataset(dataset: dict) -> dict:
     """
-    Paginate through the Socrata SoQL API for dataset dnwv-xxci.
-    Returns list of records on success, None if the endpoint is unavailable.
+    Fetch up to 5 records from a Socrata dataset endpoint.
+    Returns a result dict with keys:
+      success (bool), status_code, columns, first_record, usefulness_score,
+      matched_keywords, error (str|None)
     """
-    print(f"\n[1] Trying Socrata API: {SOCRATA_BASE}")
+    url   = dataset["url"]
+    label = dataset["label"]
+    result = {
+        "dataset":           dataset,
+        "success":           False,
+        "status_code":       None,
+        "columns":           [],
+        "first_record":      None,
+        "record_count":      0,
+        "usefulness_score":  0,
+        "matched_keywords":  [],
+        "error":             None,
+    }
+
+    print(f"\n{'─' * 60}")
+    print(f"Probing: {label}")
+    print(f"URL    : {url}")
+
+    try:
+        resp = requests.get(url, params={"$limit": 5}, headers=HTTP_HEADERS, timeout=30)
+    except requests.RequestException as exc:
+        result["error"] = str(exc)
+        print(f"  Network error: {exc}")
+        return result
+
+    result["status_code"] = resp.status_code
+    ct = resp.headers.get("Content-Type", "")
+    print(f"  HTTP {resp.status_code}  Content-Type: {ct}")
+
+    if resp.status_code == 404:
+        result["error"] = "404 Not Found — dataset does not exist on data.ny.gov"
+        print(f"  → 404: dataset does not exist")
+        return result
+
+    if resp.status_code != 200:
+        result["error"] = f"HTTP {resp.status_code}"
+        print(f"  → Unexpected status. Headers: {dict(resp.headers)}")
+        print(f"  → Body (first 400 chars): {resp.text[:400]}")
+        return result
+
+    try:
+        data = resp.json()
+    except json.JSONDecodeError:
+        result["error"] = "Response is not valid JSON"
+        print(f"  → Not valid JSON. Body (first 400 chars): {resp.text[:400]}")
+        return result
+
+    if not isinstance(data, list):
+        result["error"] = f"Expected JSON array, got {type(data).__name__}"
+        print(f"  → Unexpected structure: {type(data).__name__}")
+        print(f"  → Body (first 400 chars): {resp.text[:400]}")
+        return result
+
+    result["record_count"] = len(data)
+    print(f"  → {len(data)} records returned")
+
+    if not data:
+        result["error"] = "Dataset exists but returned 0 records"
+        print(f"  → Empty dataset")
+        return result
+
+    first = data[0]
+    columns = list(first.keys())
+    result["success"]      = True
+    result["columns"]      = columns
+    result["first_record"] = first
+
+    score, matched = score_usefulness(columns)
+    result["usefulness_score"] = score
+    result["matched_keywords"] = matched
+
+    print(f"\n  Column names ({len(columns)} total):")
+    for col in columns:
+        print(f"    • {col}")
+
+    print(f"\n  First record:")
+    print(json.dumps(first, indent=4, default=str))
+
+    print(f"\n  Usefulness score: {score}/10")
+    if matched:
+        print(f"  Matched keywords: {matched}")
+    else:
+        print(f"  No waste-transporter keywords matched — likely not the right dataset")
+
+    return result
+
+
+# ── Full fetch ────────────────────────────────────────────────────────────────
+
+def fetch_all_records(url: str, label: str) -> list[dict] | None:
+    """Paginate through a Socrata endpoint to retrieve all records."""
+    print(f"\nFetching all records from: {label}")
     session = requests.Session()
     session.headers.update(HTTP_HEADERS)
 
@@ -165,199 +289,50 @@ def try_socrata() -> list[dict] | None:
 
     while pages < PAGE_CAP:
         try:
-            resp = session.get(
-                SOCRATA_BASE,
-                params={"$limit": PAGE_SIZE, "$offset": offset},
-                timeout=30,
-            )
+            resp = session.get(url, params={"$limit": PAGE_SIZE, "$offset": offset},
+                               timeout=30)
         except requests.RequestException as exc:
-            print(f"  [1] Network error: {exc}")
-            return None
-
-        ct = resp.headers.get("Content-Type", "")
-        print(f"  [1] Page {pages + 1}: HTTP {resp.status_code}  Content-Type: {ct}")
-
-        if resp.status_code == 404:
-            print(f"  [1] 404 — dataset dnwv-xxci does not exist on data.ny.gov")
+            print(f"  Network error on page {pages + 1}: {exc}")
             return None
 
         if resp.status_code != 200:
-            print(f"  [1] Unexpected status {resp.status_code}")
-            print(f"  [1] Headers: {dict(resp.headers)}")
-            print(f"  [1] Body (first 500 chars): {resp.text[:500]}")
+            print(f"  HTTP {resp.status_code} on page {pages + 1}")
             return None
 
-        # Expect JSON array
         try:
             page = resp.json()
         except json.JSONDecodeError:
-            print(f"  [1] Response is not valid JSON")
-            print(f"  [1] Body (first 500 chars): {resp.text[:500]}")
+            print(f"  Non-JSON response on page {pages + 1}")
             return None
 
         if not isinstance(page, list):
-            print(f"  [1] Expected JSON array, got {type(page).__name__}")
-            print(f"  [1] Body (first 500 chars): {resp.text[:500]}")
-            return None
+            break
 
-        pages += 1
-        print(f"  [1] Page {pages}: {len(page)} records returned")
-
-        if pages == 1 and page:
-            print(f"  [1] First record keys: {list(page[0].keys())}")
-            print(f"  [1] Sample record:\n{json.dumps(page[0], indent=4, default=str)[:800]}")
-
+        pages    += 1
         all_rows.extend(page)
+        print(f"  Page {pages}: {len(page)} records (total so far: {len(all_rows)})")
 
         if len(page) < PAGE_SIZE:
-            break  # last page
+            break
         offset += PAGE_SIZE
 
     if pages >= PAGE_CAP:
-        print(f"  [1] WARNING: Hit PAGE_CAP ({PAGE_CAP} pages / {len(all_rows):,} records)")
+        print(f"  WARNING: Hit PAGE_CAP ({PAGE_CAP} pages / {len(all_rows):,} records)")
 
-    if not all_rows:
-        print(f"  [1] Dataset exists but returned 0 records")
-        return None
-
-    print(f"  [1] ✓ Total records from Socrata: {len(all_rows)}")
-    return all_rows
-
-
-# ── Endpoint 2: Socrata rows.json ─────────────────────────────────────────────
-
-def try_rows_json() -> list[dict] | None:
-    """
-    Try the Socrata /rows.json endpoint which returns column metadata + row data.
-    Returns a list of flat dicts on success, None if unavailable.
-    """
-    print(f"\n[2] Trying rows.json: {ROWS_JSON_URL}")
-    try:
-        resp = requests.get(ROWS_JSON_URL, headers=HTTP_HEADERS, timeout=30)
-    except requests.RequestException as exc:
-        print(f"  [2] Network error: {exc}")
-        return None
-
-    ct = resp.headers.get("Content-Type", "")
-    print(f"  [2] HTTP {resp.status_code}  Content-Type: {ct}")
-
-    if resp.status_code == 404:
-        print(f"  [2] 404 — rows.json endpoint also unavailable")
-        return None
-
-    if resp.status_code != 200:
-        print(f"  [2] Unexpected status {resp.status_code}")
-        print(f"  [2] Headers: {dict(resp.headers)}")
-        print(f"  [2] Body (first 500 chars): {resp.text[:500]}")
-        return None
-
-    try:
-        body = resp.json()
-    except json.JSONDecodeError:
-        print(f"  [2] Response is not valid JSON")
-        print(f"  [2] Body (first 500 chars): {resp.text[:500]}")
-        return None
-
-    # rows.json structure: { "meta": { "view": { "columns": [...] } }, "data": [[...]] }
-    if not isinstance(body, dict):
-        print(f"  [2] Unexpected JSON structure: {type(body).__name__}")
-        return None
-
-    meta = body.get("meta", {})
-    view = meta.get("view", {}) if isinstance(meta, dict) else {}
-    columns_meta = view.get("columns", []) if isinstance(view, dict) else []
-    raw_data     = body.get("data", [])
-
-    print(f"  [2] columns_meta count: {len(columns_meta)}  |  data rows: {len(raw_data)}")
-
-    if not columns_meta or not raw_data:
-        print(f"  [2] No usable data in rows.json response")
-        return None
-
-    # Build column name list (fieldName or name)
-    col_names = [
-        (c.get("fieldName") or c.get("name") or f"col_{i}").lower()
-        for i, c in enumerate(columns_meta)
-    ]
-    print(f"  [2] Column names: {col_names[:20]}")
-
-    # Flatten rows: each row is a list matching column order
-    records: list[dict] = []
-    for raw_row in raw_data:
-        if not isinstance(raw_row, list):
-            continue
-        record = {}
-        for i, col in enumerate(col_names):
-            record[col] = raw_row[i] if i < len(raw_row) else None
-        records.append(record)
-
-    if not records:
-        print(f"  [2] No records parsed from rows.json")
-        return None
-
-    print(f"  [2] ✓ Total records from rows.json: {len(records)}")
-    if records:
-        print(f"  [2] Sample record:\n{json.dumps(records[0], indent=4, default=str)[:800]}")
-    return records
-
-
-# ── Endpoint 3: eFACTS probe ──────────────────────────────────────────────────
-
-def probe_efacts() -> None:
-    """
-    Probe the NY DEC eFACTS waste transporter search page.
-    This is an HTML form — we can detect if it's reachable and note what
-    we see, but we cannot scrape structured data without a form submission.
-    """
-    print(f"\n[3] Probing NY DEC eFACTS: {EFACTS_URL}")
-    try:
-        resp = requests.get(EFACTS_URL, headers=HTTP_HEADERS, timeout=30)
-    except requests.RequestException as exc:
-        print(f"  [3] Network error: {exc}")
-        return
-
-    ct = resp.headers.get("Content-Type", "")
-    print(f"  [3] HTTP {resp.status_code}  Content-Type: {ct}")
-    print(f"  [3] Response size: {len(resp.content)} bytes")
-
-    if resp.status_code == 200:
-        text = resp.text
-        # Check for known markers that indicate the search form is present
-        has_form       = "<form" in text.lower()
-        has_search_btn = "search" in text.lower()
-        has_cfm        = ".cfm" in text.lower()
-        print(f"  [3] Contains <form>: {has_form}")
-        print(f"  [3] Contains 'search': {has_search_btn}")
-        print(f"  [3] References .cfm pages: {has_cfm}")
-        print(f"  [3] NOTE: eFACTS requires a POST form submission to retrieve data.")
-        print(f"  [3]       Machine-readable export not available via this URL alone.")
-        print(f"  [3]       A Selenium/Playwright scraper would be needed for full access.")
-    elif resp.status_code in (403, 401):
-        print(f"  [3] Access denied — eFACTS may require authentication or block bots.")
-    else:
-        print(f"  [3] Unexpected status: {resp.status_code}")
-        print(f"  [3] Body (first 300 chars): {resp.text[:300]}")
+    print(f"  ✓ Total records fetched: {len(all_rows)}")
+    return all_rows if all_rows else None
 
 
 # ── Record mapping ────────────────────────────────────────────────────────────
 
-def map_records(
-    raw_records: list[dict],
-    source_label: str,
-) -> list[dict]:
-    """
-    Map raw API records to our organizations schema.
-    Deduplicates by permit number within the batch, discards records with
-    no name. Returns list of org dicts ready for insert.
-    """
+def map_records(raw_records: list[dict]) -> list[dict]:
     if not raw_records:
         return []
 
-    sample_keys = list(raw_records[0].keys()) if raw_records else []
-    print(f"\nMapping {len(raw_records)} records from {source_label} ...")
-    print(f"Available keys: {sample_keys[:25]}")
+    sample_keys = list(raw_records[0].keys())
+    print(f"\nMapping {len(raw_records)} records ...")
 
-    # Deduplicate by permit number — keep the latest per permit
+    # Dedup by permit number
     permit_key = find_field(sample_keys, "permit_number")
     if permit_key:
         by_permit: dict[str, dict] = {}
@@ -366,54 +341,46 @@ def map_records(
             permit = s(rec.get(permit_key))
             if not permit:
                 no_permit += 1
-                # Still include records without permit numbers
                 by_permit[f"_nopermit_{id(rec)}"] = rec
-            else:
-                existing = by_permit.get(permit)
-                # Keep last record per permit (simple dedup — no date sort needed
-                # since Socrata returns latest data)
-                if existing is None:
-                    by_permit[permit] = rec
+            elif permit not in by_permit:
+                by_permit[permit] = rec
         deduped = list(by_permit.values())
-        print(f"Deduped by permit number: {len(deduped)} unique"
+        print(f"Deduped by permit: {len(deduped)}"
               + (f"  ({no_permit} had no permit number)" if no_permit else ""))
     else:
         deduped = raw_records
-        print(f"No permit number field found — skipping permit dedup")
+        print("No permit number field found — skipping permit dedup")
 
-    # Optional: filter to active status only if a status field is present
+    # Filter active status if present
     status_key = find_field(sample_keys, "status")
     if status_key:
-        active = [
+        active_vals = {"active", "valid", "current", "issued", "approved"}
+        deduped = [
             r for r in deduped
-            if s(r.get(status_key)) is None or
-               s(r.get(status_key)).lower() in ("active", "valid", "current", "issued", "approved", "")
+            if not s(r.get(status_key)) or
+               s(r.get(status_key)).lower() in active_vals
         ]
-        skipped_status = len(deduped) - len(active)
-        if skipped_status:
-            print(f"After status filter: {len(active)} records ({skipped_status} non-active skipped)")
-        deduped = active
+        print(f"After status filter: {len(deduped)}")
 
-    mapped:      list[dict] = []
-    seen_slugs:  set[str]   = set()
-    skipped_name = 0
+    mapped:     list[dict] = []
+    seen_slugs: set[str]   = set()
+    skipped    = 0
 
     for rec in deduped:
-        rkeys = list(rec.keys())
-
-        name_key    = find_field(rkeys, "company_name")
-        city_key    = find_field(rkeys, "city")
-        state_key   = find_field(rkeys, "state")
-        addr_key    = find_field(rkeys, "address")
-        zip_key     = find_field(rkeys, "zip")
-        phone_key   = find_field(rkeys, "phone")
-        permit_fkey = find_field(rkeys, "permit_number")
-        exp_key     = find_field(rkeys, "expiration")
-
-        name = s(rec.get(name_key)) if name_key else None
+        rkeys     = list(rec.keys())
+        name_key  = find_field(rkeys, "company_name")
+        name      = s(rec.get(name_key)) if name_key else None
         if not name:
-            skipped_name += 1
+            skipped += 1
             continue
+
+        city_key  = find_field(rkeys, "city")
+        state_key = find_field(rkeys, "state")
+        addr_key  = find_field(rkeys, "address")
+        zip_key   = find_field(rkeys, "zip")
+        phone_key = find_field(rkeys, "phone")
+        perm_key  = find_field(rkeys, "permit_number")
+        exp_key   = find_field(rkeys, "expiration")
 
         city  = s(rec.get(city_key))  if city_key  else None
         state = s(rec.get(state_key)) if state_key else "NY"
@@ -425,7 +392,6 @@ def map_records(
         if not slug:
             continue
 
-        # Disambiguate within-batch collisions
         base_slug, counter = slug, 1
         while slug in seen_slugs:
             slug = f"{base_slug}-{counter}"
@@ -436,12 +402,12 @@ def map_records(
             "name":                name,
             "slug":                slug,
             "org_type":            "hauler",
-            "address":             s(rec.get(addr_key))    if addr_key    else None,
+            "address":             s(rec.get(addr_key))  if addr_key  else None,
             "city":                city,
             "state":               state,
-            "zip":                 s(rec.get(zip_key))     if zip_key     else None,
+            "zip":                 s(rec.get(zip_key))   if zip_key   else None,
             "phone":               clean_phone(rec.get(phone_key) if phone_key else None),
-            "license_number":      s(rec.get(permit_fkey)) if permit_fkey else None,
+            "license_number":      s(rec.get(perm_key))  if perm_key  else None,
             "license_expiry":      iso_date(rec.get(exp_key) if exp_key else None),
             "service_types":       ["commercial", "industrial"],
             "service_area_states": ["NY"],
@@ -450,22 +416,15 @@ def map_records(
             "data_source":         DATA_SOURCE,
         })
 
-    if skipped_name:
-        print(f"Skipped (no name): {skipped_name}")
+    if skipped:
+        print(f"Skipped (no name): {skipped}")
     print(f"Mapped to schema : {len(mapped)}")
     return mapped
 
 
 # ── Supabase insert ───────────────────────────────────────────────────────────
 
-def slug_dedup_and_insert(
-    to_insert: list[dict],
-    supabase: "Client",
-) -> tuple[int, int, int]:
-    """
-    Load existing slugs, remove already-present records, batch-insert the rest.
-    Returns (existing_count, inserted_count, error_count).
-    """
+def slug_dedup_and_insert(to_insert: list[dict], supabase: "Client") -> tuple[int, int, int]:
     print("\nLoading existing slugs from DB ...")
     existing_slugs: set[str] = set()
     db_offset = 0
@@ -484,9 +443,8 @@ def slug_dedup_and_insert(
         db_offset += 1000
 
     print(f"Existing slugs in DB: {len(existing_slugs)}")
-
-    new_records  = [r for r in to_insert if r["slug"] not in existing_slugs]
-    already_in   = len(to_insert) - len(new_records)
+    new_records = [r for r in to_insert if r["slug"] not in existing_slugs]
+    already_in  = len(to_insert) - len(new_records)
     print(f"Already in DB       : {already_in}")
     print(f"Net new to insert   : {len(new_records)}")
 
@@ -500,7 +458,6 @@ def slug_dedup_and_insert(
 
     inserted = 0
     errors   = 0
-
     if not new_records:
         print("Nothing new to insert.")
     else:
@@ -524,6 +481,7 @@ def slug_dedup_and_insert(
 def main() -> None:
     print("=== WasteDirectory — NY DEC Part 364 Transporter Importer ===")
     print(datetime.utcnow().isoformat())
+    print(f"\nProbing {len(PROBE_DATASETS)} candidate dataset(s) on data.ny.gov ...")
 
     supabase_url     = os.environ.get("SUPABASE_URL")
     service_role_key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
@@ -531,76 +489,84 @@ def main() -> None:
         print("ERROR: Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY", file=sys.stderr)
         sys.exit(1)
 
-    # ── Try each endpoint in order ────────────────────────────────────────────
-    raw_records: list[dict] | None = None
-    source_label = ""
+    # ── 1. Probe all three datasets and collect results ───────────────────────
+    probe_results = [probe_dataset(ds) for ds in PROBE_DATASETS]
 
-    # Attempt 1: Socrata JSON API
-    raw_records = try_socrata()
-    if raw_records is not None:
-        source_label = "Socrata JSON API (dnwv-xxci)"
-    else:
-        # Attempt 2: rows.json
-        raw_records = try_rows_json()
-        if raw_records is not None:
-            source_label = "Socrata rows.json (dnwv-xxci)"
+    # ── 2. Print comparison table ─────────────────────────────────────────────
+    print(f"\n{'=' * 60}")
+    print("PROBE RESULTS SUMMARY")
+    print(f"{'=' * 60}")
+    for pr in probe_results:
+        ds = pr["dataset"]
+        if pr["success"]:
+            print(f"\n  ✓ {ds['id']}  score={pr['usefulness_score']}  "
+                  f"keywords={pr['matched_keywords']}")
+            print(f"    Columns: {pr['columns']}")
         else:
-            # Attempt 3: eFACTS probe (informational only)
-            probe_efacts()
+            print(f"\n  ✗ {ds['id']}  HTTP {pr['status_code']}  "
+                  f"error={pr['error']}")
 
-    # ── If no data found, report and exit cleanly ─────────────────────────────
-    if not raw_records:
-        print("\n" + "=" * 60)
-        print("DATA NOT AVAILABLE — Summary")
-        print("=" * 60)
+    # ── 3. Select best candidate (highest usefulness score, >= 1) ────────────
+    useful = [pr for pr in probe_results if pr["success"] and pr["usefulness_score"] >= 1]
+    useful.sort(key=lambda r: r["usefulness_score"], reverse=True)
+
+    if not useful:
+        print(f"\n{'=' * 60}")
+        print("NO USEFUL DATASET FOUND — Diagnostic Summary")
+        print(f"{'=' * 60}")
         print(
-            "\nNone of the three NY DEC Part 364 data sources returned\n"
-            "usable machine-readable records:\n"
+            "\nNone of the probed dataset IDs returned data matching\n"
+            "waste transporter keywords.\n"
             "\n"
-            "  [1] data.ny.gov/resource/dnwv-xxci.json\n"
-            "      → Dataset may not exist on NY Open Data (404) or\n"
-            "        may require an API token for bulk access.\n"
-            "\n"
-            "  [2] data.ny.gov/api/views/dnwv-xxci/rows.json\n"
-            "      → Same underlying dataset — same result as above.\n"
-            "\n"
-            "  [3] dec.ny.gov eFACTS search\n"
-            "      → Requires POST form submission; not scrapeable\n"
-            "        via GET request alone. A Selenium/Playwright\n"
-            "        browser automation would be needed.\n"
-            "\n"
-            "Recommended next steps:\n"
-            "  a) Verify the correct dataset ID on https://data.ny.gov/\n"
-            "     (search 'Part 364 transporter' or 'waste transporter')\n"
-            "  b) Check if an API token is needed:\n"
-            "     https://dev.socrata.com/foundry/data.ny.gov/dnwv-xxci\n"
-            "  c) Contact NY DEC directly for a bulk export:\n"
+            "What each returned:\n"
+        )
+        for pr in probe_results:
+            ds = pr["dataset"]
+            print(f"  • {ds['id']}: HTTP {pr['status_code']} — {pr['error'] or 'returned data but no matching keywords'}")
+            if pr["success"] and pr["columns"]:
+                print(f"    Columns seen: {pr['columns'][:10]}")
+
+        print(
+            "\nRecommended next steps:\n"
+            "  a) Search data.ny.gov for 'Part 364' or 'waste transporter permit'\n"
+            "     https://data.ny.gov/browse?q=waste+transporter\n"
+            "  b) Check NY DEC environmental permits search:\n"
             "     https://www.dec.ny.gov/permits/6101.html\n"
+            "  c) Request a bulk data export directly from NY DEC\n"
             "\n"
             "No records were modified. Exiting cleanly."
         )
-        sys.exit(0)   # Not a failure — just no data available yet
-
-    # ── Map records to schema ─────────────────────────────────────────────────
-    to_insert = map_records(raw_records, source_label)
-
-    if not to_insert:
-        print("\nNo records could be mapped after filtering. Exiting cleanly.")
         sys.exit(0)
 
-    # Preview
-    print("\nFirst 5 records to evaluate:")
+    # ── 4. Use the best-scoring dataset ──────────────────────────────────────
+    best = useful[0]
+    ds   = best["dataset"]
+    print(f"\n✓ Best candidate: {ds['id']} (score {best['usefulness_score']}, "
+          f"keywords: {best['matched_keywords']})")
+    print(f"  Proceeding to full fetch from: {ds['url']}")
+
+    raw_records = fetch_all_records(ds["url"], ds["label"])
+    if not raw_records:
+        print("Full fetch returned no records. Exiting cleanly.")
+        sys.exit(0)
+
+    # ── 5. Map + insert ───────────────────────────────────────────────────────
+    to_insert = map_records(raw_records)
+    if not to_insert:
+        print("No records mappable after filtering. Exiting cleanly.")
+        sys.exit(0)
+
+    print("\nFirst 5 records to insert:")
     for rec in to_insert[:5]:
         print(f"  {rec['name']!r:45s}  city={rec['city']!r:20s}  "
               f"state={rec['state']}  license={rec['license_number']!r}")
 
-    # ── Insert ────────────────────────────────────────────────────────────────
     supabase: Client = create_client(supabase_url, service_role_key)
     already_in, inserted, errors = slug_dedup_and_insert(to_insert, supabase)
 
-    # ── Summary ───────────────────────────────────────────────────────────────
+    # ── 6. Summary ────────────────────────────────────────────────────────────
     print("\n=== Summary ===")
-    print(f"  Source               : {source_label}")
+    print(f"  Source dataset       : {ds['id']} — {ds['label']}")
     print(f"  Total from source    : {len(raw_records)}")
     print(f"  Mapped to schema     : {len(to_insert)}")
     print(f"  Already in DB        : {already_in}")

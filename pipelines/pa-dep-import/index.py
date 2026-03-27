@@ -11,9 +11,10 @@ Strategy:
   3. If both fail, print HTTP status + headers and exit cleanly (exit 0)
      so the GitHub Actions run is marked as a warning, not a failure
 
-Expected columns:
-  WH Number, Company Name, Address, City, State, Zip,
-  Phone, Authorization Status, Expiration Date
+Confirmed column names from live data:
+  WASTE_HAULER_ID, LICENSE_ID, CLIENT_ID, WASTE_HAULER_NAME,
+  LICENSE_STATUS, STATUS (effective date), EXPIRATION, CITY, STATE, ZIP
+  (No ADDRESS column in this report)
 
 Usage:
     python pipelines/pa-dep-import/index.py
@@ -68,30 +69,43 @@ DATA_SOURCE = "pa_dep_wtsp_2026"
 SAFE_MAX    = 5000
 BATCH_SIZE  = 50
 
+# Active status values (case-insensitive upper match)
+ACTIVE_STATUSES = {"ACTIVE", "A", "CURRENT"}
+
 HTTP_HEADERS = {
     "User-Agent": "WasteDirectory-DataImport/1.0",
     "Accept":     "*/*",
 }
 
 # ── Column alias map ──────────────────────────────────────────────────────────
-# Maps our internal key -> list of possible raw column names (case-insensitive)
+# Maps our internal key -> ordered list of possible raw column names.
+# The confirmed live column names are listed first so they match before
+# any generic fallbacks.
 
 COLUMN_ALIASES: dict[str, list[str]] = {
-    "wh_number":    ["wh number", "whnumber", "wh #", "authorization number",
-                     "auth number", "auth_number", "permit number", "permit no",
-                     "hauler number", "hauler_number"],
-    "company_name": ["company name", "companyname", "business name", "company",
-                     "name", "applicant name", "hauler name"],
-    "address":      ["address", "street address", "address1", "mailing address",
-                     "street", "addr"],
+    # Primary: WASTE_HAULER_ID; fallbacks for future schema changes
+    "wh_number":    ["waste_hauler_id", "waste hauler id", "wh number",
+                     "whnumber", "wh #", "authorization number",
+                     "auth number", "permit number", "hauler number"],
+    # Primary: WASTE_HAULER_NAME
+    "company_name": ["waste_hauler_name", "waste hauler name",
+                     "company name", "companyname", "business name",
+                     "company", "name", "applicant name"],
+    # Primary: LICENSE_STATUS — must come before bare "status" which is
+    # actually the effective/issue date in this report
+    "status":       ["license_status", "license status",
+                     "authorization status", "auth status",
+                     "auth_status", "authorization_status"],
+    # Primary: EXPIRATION (expiry date)
+    "expiration":   ["expiration", "expiration date", "exp date",
+                     "expiry date", "exp_date", "expire date", "expires"],
+    # No ADDRESS column in this report — aliases kept for forward-compat
+    "address":      ["address", "street address", "address1",
+                     "mailing address", "street", "addr"],
     "city":         ["city", "municipality"],
     "state":        ["state", "st", "state code"],
     "zip":          ["zip", "zip code", "zipcode", "postal code", "zip_code"],
-    "phone":        ["phone", "phone number", "telephone", "tel", "phone_number"],
-    "status":       ["authorization status", "status", "auth status",
-                     "auth_status", "authorization_status"],
-    "expiration":   ["expiration date", "exp date", "expiry date",
-                     "expiration", "exp_date", "expire date", "expires"],
+    "phone":        ["phone", "phone number", "telephone", "tel"],
 }
 
 
@@ -139,7 +153,6 @@ def iso_date(raw) -> str | None:
     """Return YYYY-MM-DD, handling pandas Timestamps, MM/DD/YYYY, ISO strings."""
     if raw is None:
         return None
-    # Pandas Timestamp or datetime
     if hasattr(raw, "strftime"):
         return raw.strftime("%Y-%m-%d")
     v = s(raw)
@@ -150,7 +163,6 @@ def iso_date(raw) -> str | None:
             return datetime.strptime(v.split("T")[0].split(" ")[0], fmt).strftime("%Y-%m-%d")
         except ValueError:
             continue
-    # Last resort: return first 10 chars if long enough
     return v[:10] if len(v) >= 10 else None
 
 
@@ -174,13 +186,12 @@ def _parse_df(raw_bytes: bytes | str, is_excel: bool) -> pd.DataFrame | None:
                 df = pd.read_excel(io.BytesIO(raw_bytes), skiprows=skip, dtype=str,
                                    engine="openpyxl")
             else:
-                text = raw_bytes if isinstance(raw_bytes, str) else raw_bytes.decode("utf-8-sig", errors="replace")
+                text = (raw_bytes if isinstance(raw_bytes, str)
+                        else raw_bytes.decode("utf-8-sig", errors="replace"))
                 df = pd.read_csv(io.StringIO(text), skiprows=skip, dtype=str)
 
-            # Require at least 4 meaningful columns and 1 data row
             real_cols = [c for c in df.columns if not str(c).startswith("Unnamed")]
             if len(real_cols) >= 4 and len(df) > 0:
-                # Drop fully-empty rows
                 df = df.dropna(how="all")
                 if len(df) > 0:
                     return df
@@ -197,7 +208,8 @@ def fetch_csv() -> pd.DataFrame | None:
         print(f"  [CSV] Network error: {exc}")
         return None
 
-    print(f"  [CSV] HTTP {resp.status_code}  Content-Type: {resp.headers.get('Content-Type','?')}")
+    print(f"  [CSV] HTTP {resp.status_code}  "
+          f"Content-Type: {resp.headers.get('Content-Type', '?')}")
     if resp.status_code != 200:
         print(f"  [CSV] Response headers: {dict(resp.headers)}")
         print(f"  [CSV] Body (first 500 chars):\n{resp.text[:500]}")
@@ -209,7 +221,7 @@ def fetch_csv() -> pd.DataFrame | None:
         print(f"  [CSV] Content (first 1000 chars):\n{resp.text[:1000]}")
         return None
 
-    print(f"  [CSV] ✓ Parsed: {len(df)} rows, columns: {list(df.columns)[:15]}")
+    print(f"  [CSV] ✓ Parsed: {len(df)} rows, columns: {list(df.columns)}")
     return df
 
 
@@ -228,7 +240,6 @@ def fetch_excel() -> pd.DataFrame | None:
         print(f"  [Excel] Body (first 500 chars):\n{resp.text[:500]}")
         return None
 
-    # If we got back HTML, it's an error page, not Excel
     if "text/html" in ct.lower() and len(resp.content) < 50_000:
         print(f"  [Excel] Received HTML (error page), not Excel data")
         print(f"  [Excel] Body (first 500 chars):\n{resp.text[:500]}")
@@ -240,7 +251,7 @@ def fetch_excel() -> pd.DataFrame | None:
         print(f"  [Excel] Content-Length: {len(resp.content)} bytes")
         return None
 
-    print(f"  [Excel] ✓ Parsed: {len(df)} rows, columns: {list(df.columns)[:15]}")
+    print(f"  [Excel] ✓ Parsed: {len(df)} rows, columns: {list(df.columns)}")
     return df
 
 
@@ -273,40 +284,46 @@ def main() -> None:
             "   No data was modified. Exiting cleanly.",
             file=sys.stderr,
         )
-        sys.exit(0)   # exit 0 = not a code error, just data unavailable
+        sys.exit(0)
 
     total_fetched = len(df)
     df_cols = list(df.columns)
-    print(f"\nTotal rows in report: {total_fetched}")
+    print(f"\nTotal rows in report : {total_fetched}")
+    print(f"All columns          : {df_cols}")
 
-    # Show first record for debugging column mapping
+    # Show first record for column-mapping confirmation
     if total_fetched > 0:
         print("\nSample record (first row):")
-        for k, v in list(df.iloc[0].to_dict().items())[:15]:
+        for k, v in df.iloc[0].to_dict().items():
             print(f"  {k!r}: {v!r}")
 
-    # ── 2. Filter to Active status ────────────────────────────────────────────
+    # ── 2. Inspect and filter by LICENSE_STATUS ───────────────────────────────
     status_col = find_col(df_cols, "status")
+
     if status_col:
-        df = df[df[status_col].fillna("").str.strip().str.lower() == "active"]
-        print(f"\nAfter status=Active filter: {len(df)} records")
+        unique_statuses = df[status_col].fillna("(null)").unique().tolist()
+        print(f"\nUnique {status_col!r} values: {unique_statuses}")
+
+        before = len(df)
+        df = df[df[status_col].fillna("").str.upper().isin(ACTIVE_STATUSES)]
+        print(f"After active filter  : {len(df)} records (was {before}, "
+              f"active values matched: {ACTIVE_STATUSES})")
     else:
-        print(f"\nWARNING: No status column found among: {df_cols[:20]}")
+        print(f"\nWARNING: No status column found among: {df_cols}")
         print("Proceeding without status filter — all records included")
 
     if len(df) == 0:
         print("No active records found after filtering. Exiting cleanly.")
         sys.exit(0)
 
-    # ── 3. Deduplicate by WH Number (keep last occurrence = latest) ───────────
+    # ── 3. Deduplicate by WASTE_HAULER_ID (keep last = latest record) ─────────
     wh_col = find_col(df_cols, "wh_number")
     if wh_col:
         before = len(df)
         df = df.drop_duplicates(subset=[wh_col], keep="last")
-        print(f"After WH Number dedup: {len(df)} unique (was {before})")
+        print(f"After {wh_col!r} dedup : {len(df)} unique (was {before})")
     else:
-        print(f"WARNING: No WH Number column found among: {df_cols[:20]}")
-        print("Proceeding without WH Number dedup")
+        print(f"WARNING: No WH Number column found. Available: {df_cols}")
 
     # ── 4. Map to organizations schema ────────────────────────────────────────
     print("\nMapping to organization schema ...")
@@ -339,11 +356,11 @@ def main() -> None:
         raw_state = s(get_val(row_dict, df_cols, "state")) or "PA"
         state     = raw_state[:2].upper() if len(raw_state) >= 2 else raw_state.upper()
 
+        # Note: no ADDRESS column in the PA DEP WTSP report; omit the key
         to_insert.append({
             "name":                name,
             "slug":                slug,
             "org_type":            "hauler",
-            "address":             s(get_val(row_dict, df_cols, "address")),
             "city":                city or None,
             "state":               state,
             "zip":                 s(get_val(row_dict, df_cols, "zip")),
@@ -366,10 +383,11 @@ def main() -> None:
         sys.exit(0)
 
     # Preview
-    print("\nFirst 5 records to evaluate:")
+    print("\nFirst 5 records to insert:")
     for rec in to_insert[:5]:
         print(f"  {rec['name']!r:45s}  city={rec['city']!r:20s}  "
-              f"state={rec['state']}  license={rec['license_number']!r}")
+              f"state={rec['state']}  license={rec['license_number']!r}  "
+              f"expiry={rec['license_expiry']!r}")
 
     # ── 5. Connect to Supabase ────────────────────────────────────────────────
     supabase: Client = create_client(supabase_url, service_role_key)
@@ -394,8 +412,8 @@ def main() -> None:
 
     print(f"Existing slugs in DB   : {len(existing_slugs)}")
 
-    new_records  = [r for r in to_insert if r["slug"] not in existing_slugs]
-    skipped_db   = len(to_insert) - len(new_records)
+    new_records = [r for r in to_insert if r["slug"] not in existing_slugs]
+    skipped_db  = len(to_insert) - len(new_records)
     print(f"Already in DB          : {skipped_db}")
     print(f"Net new to insert      : {len(new_records)}")
 
@@ -430,7 +448,7 @@ def main() -> None:
     # ── 9. Summary ────────────────────────────────────────────────────────────
     print("\n=== Summary ===")
     print(f"  Total in report      : {total_fetched}")
-    print(f"  After Active filter  : {len(df)}")
+    print(f"  After active filter  : {len(df)}")
     print(f"  Mapped to schema     : {len(to_insert)}")
     print(f"  Already in DB        : {skipped_db}")
     print(f"  Inserted             : {inserted}")
