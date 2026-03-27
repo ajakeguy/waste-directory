@@ -1,0 +1,32 @@
+name: NJ DEP A-901 Sync
+
+on:
+  # Run on the 7th of each month at 3am UTC
+  schedule:
+    - cron: "0 3 7 * *"
+  # Allow manual runs from the GitHub Actions UI
+  workflow_dispatch:
+
+jobs:
+  import-nj-dep:
+    name: Import NJ DEP A-901 waste transporter licenses
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Python dependencies
+        run: pip install requests pandas beautifulsoup4 pdfplumber supabase
+
+      - name: Run NJ DEP A-901 importer
+        run: python pipelines/nj-dep-import/index.py
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
