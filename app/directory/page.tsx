@@ -2,6 +2,7 @@ import { Suspense } from "react";
 import type { Metadata } from "next";
 import { FilterSidebar } from "@/components/directory/FilterSidebar";
 import { OrganizationCard } from "@/components/directory/OrganizationCard";
+import { SearchBar } from "@/components/directory/SearchBar";
 import { getOrganizations } from "@/lib/data/organizations";
 import { getSavedOrgIds } from "@/lib/data/saved-items";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -119,6 +120,15 @@ export default async function DirectoryPage({
           Browse licensed waste haulers across Vermont, New York, and
           Massachusetts
         </p>
+      </div>
+
+      {/* Search bar — wrapped in Suspense because it calls useSearchParams */}
+      <div className="mb-5">
+        <Suspense fallback={
+          <div className="w-full h-[42px] rounded-lg border border-gray-200 bg-gray-50 animate-pulse" />
+        }>
+          <SearchBar />
+        </Suspense>
       </div>
 
       <div className="flex gap-6 items-start">

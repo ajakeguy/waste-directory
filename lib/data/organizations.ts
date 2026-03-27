@@ -47,9 +47,7 @@ export async function getOrganizations(
   }
 
   if (filters.q) {
-    query = query.textSearch("search_vector", filters.q, {
-      type: "websearch",
-    });
+    query = query.ilike("name", `%${filters.q}%`);
   }
 
   const { data, error } = await query;
