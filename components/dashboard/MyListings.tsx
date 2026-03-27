@@ -90,74 +90,78 @@ export function MyListings({
             return (
               <div
                 key={listing.id}
-                className="bg-white rounded-xl border border-gray-200 p-4 flex items-start gap-4"
+                className="bg-white rounded-xl border border-gray-200 p-4"
               >
-                {/* Thumbnail */}
-                <div className="size-14 rounded-lg bg-gray-100 overflow-hidden shrink-0">
-                  {listing.photos?.[0] ? (
-                    // eslint-disable-next-line @next/next/no-img-element
-                    <img
-                      src={listing.photos[0]}
-                      alt=""
-                      className="w-full h-full object-cover"
-                    />
-                  ) : (
-                    <div className="w-full h-full flex items-center justify-center text-gray-300 text-xs">
-                      No photo
-                    </div>
-                  )}
-                </div>
-
-                {/* Info */}
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-start gap-2 flex-wrap">
-                    <Link
-                      href={`/marketplace/${listing.id}`}
-                      className="font-medium text-gray-900 hover:text-[#2D6A4F] transition-colors text-sm leading-snug"
-                    >
-                      {listing.title}
-                    </Link>
-                    <Badge className={`text-xs ${STATUS_STYLES[listing.status]}`}>
-                      {listing.status.charAt(0).toUpperCase() + listing.status.slice(1)}
-                    </Badge>
+                <div className="flex items-start gap-4">
+                  {/* Thumbnail */}
+                  <div className="size-14 rounded-lg bg-gray-100 overflow-hidden shrink-0">
+                    {listing.photos?.[0] ? (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img
+                        src={listing.photos[0]}
+                        alt=""
+                        className="w-full h-full object-cover"
+                      />
+                    ) : (
+                      <div className="w-full h-full flex items-center justify-center text-gray-300 text-xs">
+                        No photo
+                      </div>
+                    )}
                   </div>
 
-                  <p className="text-xs text-gray-500 mt-0.5">
-                    {EQUIPMENT_CATEGORY_LABELS[listing.category] ?? listing.category}
-                    {" · "}
-                    {formatPrice(listing.price, listing.price_negotiable)}
-                  </p>
+                  {/* Info + actions */}
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-start justify-between gap-2 flex-wrap">
+                      <div className="flex items-start gap-2 flex-wrap min-w-0">
+                        <Link
+                          href={`/marketplace/${listing.id}`}
+                          className="font-medium text-gray-900 hover:text-[#2D6A4F] transition-colors text-sm leading-snug"
+                        >
+                          {listing.title}
+                        </Link>
+                        <Badge className={`text-xs shrink-0 ${STATUS_STYLES[listing.status]}`}>
+                          {listing.status.charAt(0).toUpperCase() + listing.status.slice(1)}
+                        </Badge>
+                      </div>
 
-                  {listing.status === "active" && (
-                    <div className="flex items-center gap-1 mt-1">
-                      <Clock className="size-3 text-gray-400" />
-                      <span className={`text-xs ${expiring ? "text-amber-600 font-medium" : "text-gray-400"}`}>
-                        {daysLeft > 0 ? `Expires in ${daysLeft} day${daysLeft !== 1 ? "s" : ""}` : "Expired"}
-                      </span>
+                      {/* Actions — always visible, wraps on small screens */}
+                      <div className="flex items-center gap-2 shrink-0">
+                        {listing.status === "active" && (
+                          <button
+                            onClick={() => handleMarkSold(listing.id)}
+                            disabled={pending === listing.id}
+                            title="Mark as sold"
+                            className="inline-flex items-center gap-1 h-7 px-2.5 rounded-lg border border-gray-200 text-xs text-gray-600 hover:bg-gray-50 transition-colors disabled:opacity-50"
+                          >
+                            <CheckSquare className="size-3.5" />
+                            Sold
+                          </button>
+                        )}
+                        <Link
+                          href={`/marketplace/${listing.id}/edit`}
+                          className="inline-flex items-center gap-1 h-7 px-2.5 rounded-lg border border-gray-200 text-xs text-gray-600 hover:bg-gray-50 transition-colors"
+                        >
+                          <Pencil className="size-3.5" />
+                          Edit
+                        </Link>
+                      </div>
                     </div>
-                  )}
-                </div>
 
-                {/* Actions */}
-                <div className="flex items-center gap-2 shrink-0">
-                  {listing.status === "active" && (
-                    <button
-                      onClick={() => handleMarkSold(listing.id)}
-                      disabled={pending === listing.id}
-                      title="Mark as sold"
-                      className="inline-flex items-center gap-1 h-7 px-2.5 rounded-lg border border-gray-200 text-xs text-gray-600 hover:bg-gray-50 transition-colors disabled:opacity-50"
-                    >
-                      <CheckSquare className="size-3.5" />
-                      Sold
-                    </button>
-                  )}
-                  <Link
-                    href={`/marketplace/${listing.id}/edit`}
-                    className="inline-flex items-center gap-1 h-7 px-2.5 rounded-lg border border-gray-200 text-xs text-gray-600 hover:bg-gray-50 transition-colors"
-                  >
-                    <Pencil className="size-3.5" />
-                    Edit
-                  </Link>
+                    <p className="text-xs text-gray-500 mt-0.5">
+                      {EQUIPMENT_CATEGORY_LABELS[listing.category] ?? listing.category}
+                      {" · "}
+                      {formatPrice(listing.price, listing.price_negotiable)}
+                    </p>
+
+                    {listing.status === "active" && (
+                      <div className="flex items-center gap-1 mt-1">
+                        <Clock className="size-3 text-gray-400" />
+                        <span className={`text-xs ${expiring ? "text-amber-600 font-medium" : "text-gray-400"}`}>
+                          {daysLeft > 0 ? `Expires in ${daysLeft} day${daysLeft !== 1 ? "s" : ""}` : "Expired"}
+                        </span>
+                      </div>
+                    )}
+                  </div>
                 </div>
               </div>
             );

@@ -131,9 +131,56 @@ export function DashboardClient({
       </section>
 
       <div className="max-w-6xl mx-auto px-4 sm:px-6 py-8">
+
+        {/* ── Mobile: horizontal scrollable list tabs ─────────────── */}
+        <div className="md:hidden mb-5">
+          <div className="flex items-center gap-2 overflow-x-auto pb-1 [-webkit-overflow-scrolling:touch]">
+            <button
+              onClick={() => setActiveListId("all")}
+              className={`flex items-center gap-1.5 h-8 px-3 rounded-full text-sm whitespace-nowrap shrink-0 transition-colors ${
+                activeListId === "all"
+                  ? "bg-[#2D6A4F] text-white font-medium"
+                  : "bg-white border border-gray-200 text-gray-600 hover:border-[#2D6A4F]/40"
+              }`}
+            >
+              <Heart className="size-3" />
+              All Saved
+              <span className="text-xs opacity-70 ml-0.5">{allCount}</span>
+            </button>
+
+            {lists.map((list) => (
+              <button
+                key={list.id}
+                onClick={() => setActiveListId(list.id)}
+                className={`flex items-center gap-1.5 h-8 px-3 rounded-full text-sm whitespace-nowrap shrink-0 transition-colors ${
+                  activeListId === list.id
+                    ? "text-white font-medium"
+                    : "bg-white border border-gray-200 text-gray-600 hover:border-gray-300"
+                }`}
+                style={activeListId === list.id ? { backgroundColor: list.color } : {}}
+              >
+                <span
+                  className="size-2 rounded-full shrink-0"
+                  style={{ backgroundColor: activeListId === list.id ? "rgba(255,255,255,0.6)" : list.color }}
+                />
+                {list.name}
+                <span className="text-xs opacity-70 ml-0.5">{countByList(list.id)}</span>
+              </button>
+            ))}
+
+            <button
+              onClick={() => setModalOpen(true)}
+              className="flex items-center gap-1.5 h-8 px-3 rounded-full text-sm whitespace-nowrap shrink-0 border border-dashed border-[#2D6A4F]/50 text-[#2D6A4F] hover:border-[#2D6A4F] transition-colors"
+            >
+              <Plus className="size-3" />
+              New list
+            </button>
+          </div>
+        </div>
+
         <div className="flex gap-6 items-start">
-          {/* ── Left sidebar ────────────────────────────────────────── */}
-          <aside className="w-52 shrink-0 sticky top-24 space-y-1">
+          {/* ── Left sidebar — desktop only ──────────────────────────── */}
+          <aside className="hidden md:block w-52 shrink-0 sticky top-24 space-y-1">
             <p className="text-xs font-semibold text-gray-400 uppercase tracking-widest px-2 mb-3">
               Saved haulers
             </p>

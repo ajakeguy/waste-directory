@@ -1,7 +1,8 @@
 "use client";
 
 import { useRouter, useSearchParams, usePathname } from "next/navigation";
-import { useCallback } from "react";
+import { useCallback, useState } from "react";
+import { SlidersHorizontal, ChevronDown, ChevronUp } from "lucide-react";
 import {
   EQUIPMENT_CATEGORIES,
   EQUIPMENT_CATEGORY_LABELS,
@@ -41,11 +42,34 @@ export function MarketplaceFilters() {
     [router, pathname, searchParams]
   );
 
+  const [mobileOpen, setMobileOpen] = useState(false);
   const hasFilters = category || condition || state || priceMin || priceMax;
+  const activeFilterCount = [category, condition, state, priceMin, priceMax].filter(Boolean).length;
 
   return (
-    <aside className="w-64 shrink-0">
-      <div className="bg-white rounded-xl border border-gray-200 p-5 sticky top-24">
+    <aside className="w-full md:w-64 md:shrink-0">
+      {/* Mobile toggle button */}
+      <button
+        onClick={() => setMobileOpen((o) => !o)}
+        className="md:hidden w-full flex items-center justify-between px-4 py-2.5 bg-white rounded-xl border border-gray-200 text-sm font-medium text-gray-700 mb-2"
+      >
+        <span className="flex items-center gap-2">
+          <SlidersHorizontal className="size-4 text-gray-400" />
+          Filters
+          {activeFilterCount > 0 && (
+            <span className="inline-flex items-center justify-center size-5 rounded-full bg-[#2D6A4F] text-white text-xs font-semibold">
+              {activeFilterCount}
+            </span>
+          )}
+        </span>
+        {mobileOpen ? (
+          <ChevronUp className="size-4 text-gray-400" />
+        ) : (
+          <ChevronDown className="size-4 text-gray-400" />
+        )}
+      </button>
+
+      <div className={`bg-white rounded-xl border border-gray-200 p-5 md:sticky md:top-24 ${mobileOpen ? "block" : "hidden md:block"}`}>
         <div className="flex items-center justify-between mb-5">
           <h2 className="font-semibold text-gray-900">Filters</h2>
           {hasFilters && (

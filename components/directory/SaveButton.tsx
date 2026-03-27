@@ -202,7 +202,7 @@ export function SaveButton({ orgId, orgName, initialSaved, userId }: Props) {
               : "Save hauler"
             : "Sign in to save"
         }
-        className={`p-1.5 rounded-lg transition-colors disabled:opacity-50 ${
+        className={`min-h-[44px] min-w-[44px] flex items-center justify-center rounded-lg transition-colors disabled:opacity-50 ${
           saved
             ? "text-rose-500 hover:text-rose-600 hover:bg-rose-50"
             : "text-gray-300 hover:text-rose-500 hover:bg-rose-50"

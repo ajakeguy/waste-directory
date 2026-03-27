@@ -23,7 +23,7 @@ export function HeaderShell({ children }: { children: React.ReactNode }) {
 
   return (
     <header
-      className={`sticky top-0 z-50 bg-[#2D6A4F] text-white transition-shadow duration-200 ${
+      className={`relative sticky top-0 z-50 bg-[#2D6A4F] text-white transition-shadow duration-200 ${
         scrolled ? "shadow-md" : ""
       }`}
     >

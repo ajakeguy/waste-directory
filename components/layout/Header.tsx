@@ -3,6 +3,7 @@ import { Button } from "@/components/ui/button";
 import { createClient } from "@/lib/supabase/server";
 import { UserMenu } from "@/components/layout/UserMenu";
 import { HeaderShell } from "@/components/layout/HeaderShell";
+import { MobileNav } from "@/components/layout/MobileNav";
 
 export default async function Header() {
   const supabase = await createClient();
@@ -32,7 +33,7 @@ export default async function Header() {
           WasteDirectory
         </Link>
 
-        {/* Nav links */}
+        {/* Nav links — desktop only */}
         <nav className="hidden sm:flex items-center gap-8">
           <Link
             href="/directory"
@@ -54,20 +55,25 @@ export default async function Header() {
           </Link>
         </nav>
 
-        {/* Auth area */}
-        {user ? (
-          <UserMenu name={displayName} email={user.email ?? ""} />
-        ) : (
-          <Link href="/login">
-            <Button
-              variant="outline"
-              size="sm"
-              className="border-white/40 text-white bg-transparent hover:bg-white/10 hover:text-white"
-            >
-              Login
-            </Button>
-          </Link>
-        )}
+        {/* Auth area — desktop only */}
+        <div className="hidden sm:block">
+          {user ? (
+            <UserMenu name={displayName} email={user.email ?? ""} />
+          ) : (
+            <Link href="/login">
+              <Button
+                variant="outline"
+                size="sm"
+                className="border-white/40 text-white bg-transparent hover:bg-white/10 hover:text-white"
+              >
+                Login
+              </Button>
+            </Link>
+          )}
+        </div>
+
+        {/* Hamburger — mobile only */}
+        <MobileNav isLoggedIn={!!user} />
       </div>
     </HeaderShell>
   );

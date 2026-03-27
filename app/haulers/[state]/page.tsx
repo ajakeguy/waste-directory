@@ -194,8 +194,8 @@ async function StateLandingPage({
 
       {/* Directory with filters */}
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-        <div className="flex gap-6 items-start">
-          <Suspense fallback={<div className="w-64 shrink-0" />}>
+        <div className="flex flex-col md:flex-row gap-4 md:gap-6 md:items-start">
+          <Suspense fallback={<div className="hidden md:block md:w-64 md:shrink-0" />}>
             <FilterSidebar defaultState={stateCode} />
           </Suspense>
 
