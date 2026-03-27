@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import {
@@ -9,11 +9,35 @@ import {
   FolderOpen,
   BookmarkX,
   StickyNote,
+  MoreHorizontal,
+  Pencil,
+  Palette,
+  Trash2,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { OrganizationCard } from "@/components/directory/OrganizationCard";
 import { NewListModal } from "@/components/dashboard/NewListModal";
 import type { UserList, SavedItemWithOrg } from "@/types";
+
+// ── Color presets (shared with NewListModal) ──────────────────────────────────
+
+const PRESET_COLORS = [
+  { hex: "#2D6A4F", label: "Forest green" },
+  { hex: "#94A3B8", label: "Silver" },
+  { hex: "#3B82F6", label: "Blue" },
+  { hex: "#F59E0B", label: "Amber" },
+  { hex: "#EF4444", label: "Red" },
+  { hex: "#8B5CF6", label: "Purple" },
+];
+
+// ── Types ─────────────────────────────────────────────────────────────────────
 
 type Props = {
   userId: string;
@@ -21,6 +45,8 @@ type Props = {
   lists: UserList[];
   savedItems: SavedItemWithOrg[];
 };
+
+// ── Main client component ─────────────────────────────────────────────────────
 
 export function DashboardClient({
   userId,
@@ -31,6 +57,7 @@ export function DashboardClient({
   const [lists, setLists] = useState<UserList[]>(initialLists);
   const [activeListId, setActiveListId] = useState<string | "all">("all");
   const [modalOpen, setModalOpen] = useState(false);
+  const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
   const router = useRouter();
 
   // Build counts per list
@@ -53,7 +80,38 @@ export function DashboardClient({
     router.refresh();
   };
 
+  const handleRename = async (listId: string, newName: string) => {
+    await fetch(`/api/lists/${listId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: newName }),
+    });
+    setLists((prev) =>
+      prev.map((l) => (l.id === listId ? { ...l, name: newName } : l))
+    );
+  };
+
+  const handleColorChange = async (listId: string, newColor: string) => {
+    await fetch(`/api/lists/${listId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ color: newColor }),
+    });
+    setLists((prev) =>
+      prev.map((l) => (l.id === listId ? { ...l, color: newColor } : l))
+    );
+  };
+
+  const handleDeleteList = async (listId: string) => {
+    await fetch(`/api/lists/${listId}`, { method: "DELETE" });
+    setLists((prev) => prev.filter((l) => l.id !== listId));
+    setDeleteConfirmId(null);
+    if (activeListId === listId) setActiveListId("all");
+    router.refresh();
+  };
+
   const activeList = lists.find((l) => l.id === activeListId);
+  const deleteTarget = lists.find((l) => l.id === deleteConfirmId);
 
   return (
     <>
@@ -72,7 +130,7 @@ export function DashboardClient({
       <div className="max-w-6xl mx-auto px-4 sm:px-6 py-8">
         <div className="flex gap-6 items-start">
           {/* ── Left sidebar ────────────────────────────────────────── */}
-          <aside className="w-52 shrink-0 sticky top-6 space-y-1">
+          <aside className="w-52 shrink-0 sticky top-24 space-y-1">
             <p className="text-xs font-semibold text-gray-400 uppercase tracking-widest px-2 mb-3">
               Saved haulers
             </p>
@@ -86,15 +144,17 @@ export function DashboardClient({
               onClick={() => setActiveListId("all")}
             />
 
-            {/* User lists */}
+            {/* User lists with edit controls */}
             {lists.map((list) => (
-              <SidebarItem
+              <EditableListItem
                 key={list.id}
-                label={list.name}
+                list={list}
                 count={countByList(list.id)}
                 active={activeListId === list.id}
-                dot={list.color}
                 onClick={() => setActiveListId(list.id)}
+                onRename={handleRename}
+                onColorChange={handleColorChange}
+                onDeleteRequest={(id) => setDeleteConfirmId(id)}
               />
             ))}
 
@@ -120,7 +180,9 @@ export function DashboardClient({
                   />
                 )}
                 <h2 className="font-semibold text-gray-900">
-                  {activeListId === "all" ? "All Saved" : (activeList?.name ?? "List")}
+                  {activeListId === "all"
+                    ? "All Saved"
+                    : (activeList?.name ?? "List")}
                 </h2>
                 <Badge variant="secondary" className="text-xs">
                   {visibleItems.length}
@@ -205,25 +267,55 @@ export function DashboardClient({
         onClose={() => setModalOpen(false)}
         onCreated={handleListCreated}
       />
+
+      {/* Delete confirmation dialog */}
+      <Dialog
+        open={!!deleteConfirmId}
+        onOpenChange={(o) => { if (!o) setDeleteConfirmId(null); }}
+      >
+        <DialogContent className="sm:max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Delete &ldquo;{deleteTarget?.name}&rdquo;?</DialogTitle>
+          </DialogHeader>
+          <p className="text-sm text-gray-600 mt-1">
+            Haulers in this list will be moved to Favorites. This cannot be
+            undone.
+          </p>
+          <div className="flex justify-end gap-2 mt-4">
+            <Button
+              variant="outline"
+              onClick={() => setDeleteConfirmId(null)}
+            >
+              Cancel
+            </Button>
+            <Button
+              className="bg-rose-600 hover:bg-rose-700 text-white"
+              onClick={() =>
+                deleteConfirmId && handleDeleteList(deleteConfirmId)
+              }
+            >
+              Delete list
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
     </>
   );
 }
 
-// ── Sidebar item ──────────────────────────────────────────────────────────────
+// ── Sidebar item (non-editable, used for "All Saved") ─────────────────────────
 
 function SidebarItem({
   label,
   count,
   active,
   icon,
-  dot,
   onClick,
 }: {
   label: string;
   count: number;
   active: boolean;
   icon?: React.ReactNode;
-  dot?: string;
   onClick: () => void;
 }) {
   return (
@@ -235,15 +327,8 @@ function SidebarItem({
           : "text-gray-600 hover:bg-gray-100"
       }`}
     >
-      {dot ? (
-        <span
-          className="size-2.5 rounded-full shrink-0"
-          style={{ backgroundColor: dot }}
-        />
-      ) : (
-        icon && (
-          <span className="shrink-0 text-current opacity-60">{icon}</span>
-        )
+      {icon && (
+        <span className="shrink-0 text-current opacity-60">{icon}</span>
       )}
       <span className="flex-1 truncate">{label}</span>
       <span
@@ -254,5 +339,191 @@ function SidebarItem({
         {count}
       </span>
     </button>
+  );
+}
+
+// ── Editable list sidebar item ─────────────────────────────────────────────────
+
+function EditableListItem({
+  list,
+  count,
+  active,
+  onClick,
+  onRename,
+  onColorChange,
+  onDeleteRequest,
+}: {
+  list: UserList;
+  count: number;
+  active: boolean;
+  onClick: () => void;
+  onRename: (id: string, newName: string) => Promise<void>;
+  onColorChange: (id: string, color: string) => Promise<void>;
+  onDeleteRequest: (id: string) => void;
+}) {
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [mode, setMode] = useState<"view" | "rename" | "color">("view");
+  const [renameValue, setRenameValue] = useState(list.name);
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  // Close dropdown on outside click
+  useEffect(() => {
+    if (!menuOpen) return;
+    const onDown = (e: MouseEvent) => {
+      if (
+        containerRef.current &&
+        !containerRef.current.contains(e.target as Node)
+      ) {
+        setMenuOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, [menuOpen]);
+
+  // Keep rename input in sync when list name changes externally
+  useEffect(() => {
+    setRenameValue(list.name);
+  }, [list.name]);
+
+  const submitRename = async () => {
+    const trimmed = renameValue.trim();
+    if (trimmed && trimmed !== list.name) {
+      await onRename(list.id, trimmed);
+    } else {
+      setRenameValue(list.name);
+    }
+    setMode("view");
+  };
+
+  return (
+    <div ref={containerRef} className="relative group">
+      {/* ── Rename mode ── */}
+      {mode === "rename" && (
+        <div className="flex items-center gap-1.5 px-2 py-1.5">
+          <span
+            className="size-2.5 rounded-full shrink-0"
+            style={{ backgroundColor: list.color }}
+          />
+          <input
+            autoFocus
+            value={renameValue}
+            onChange={(e) => setRenameValue(e.target.value)}
+            onBlur={submitRename}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") { e.preventDefault(); submitRename(); }
+              if (e.key === "Escape") { setRenameValue(list.name); setMode("view"); }
+            }}
+            maxLength={60}
+            className="flex-1 min-w-0 text-sm border border-[#2D6A4F] rounded px-1.5 py-0.5 focus:outline-none focus:ring-1 focus:ring-[#2D6A4F]"
+          />
+        </div>
+      )}
+
+      {/* ── Color picker mode ── */}
+      {mode === "color" && (
+        <div className="px-2 py-2">
+          <p className="text-xs text-gray-500 mb-2">Choose color</p>
+          <div className="flex gap-1.5 flex-wrap">
+            {PRESET_COLORS.map((c) => (
+              <button
+                key={c.hex}
+                type="button"
+                title={c.label}
+                onClick={async () => {
+                  await onColorChange(list.id, c.hex);
+                  setMode("view");
+                }}
+                className={`size-6 rounded-full transition-all ${
+                  list.color === c.hex
+                    ? "ring-2 ring-offset-1 ring-gray-400 scale-110"
+                    : "hover:scale-105"
+                }`}
+                style={{ backgroundColor: c.hex }}
+                aria-label={c.label}
+              />
+            ))}
+          </div>
+          <button
+            onClick={() => setMode("view")}
+            className="text-xs text-gray-400 hover:text-gray-600 mt-2 block"
+          >
+            Cancel
+          </button>
+        </div>
+      )}
+
+      {/* ── Normal view ── */}
+      {mode === "view" && (
+        <button
+          onClick={onClick}
+          className={`w-full flex items-center gap-2 px-2 py-2 rounded-lg text-sm transition-colors text-left ${
+            active
+              ? "bg-[#2D6A4F]/10 text-[#2D6A4F] font-medium"
+              : "text-gray-600 hover:bg-gray-100"
+          }`}
+        >
+          <span
+            className="size-2.5 rounded-full shrink-0"
+            style={{ backgroundColor: list.color }}
+          />
+          <span className="flex-1 truncate">{list.name}</span>
+          <span
+            className={`text-xs tabular-nums ${
+              active ? "text-[#2D6A4F]" : "text-gray-400"
+            }`}
+          >
+            {count}
+          </span>
+
+          {/* "…" options button — shown on hover or when menu is open */}
+          <span
+            role="button"
+            aria-label="List options"
+            onClick={(e) => {
+              e.stopPropagation();
+              setMenuOpen((o) => !o);
+            }}
+            className={`shrink-0 p-0.5 rounded transition-colors hover:bg-black/10 ${
+              menuOpen ? "opacity-100" : "opacity-0 group-hover:opacity-100"
+            }`}
+          >
+            <MoreHorizontal className="size-3.5" />
+          </span>
+        </button>
+      )}
+
+      {/* ── Dropdown menu ── */}
+      {menuOpen && mode === "view" && (
+        <div className="absolute left-0 right-0 top-full mt-0.5 z-20 bg-white rounded-lg border border-gray-200 shadow-md py-1 text-sm">
+          <button
+            onClick={() => { setMode("rename"); setMenuOpen(false); }}
+            className="w-full flex items-center gap-2.5 px-3 py-1.5 text-gray-700 hover:bg-gray-50 transition-colors text-left"
+          >
+            <Pencil className="size-3.5 text-gray-400 shrink-0" />
+            Rename
+          </button>
+          <button
+            onClick={() => { setMode("color"); setMenuOpen(false); }}
+            className="w-full flex items-center gap-2.5 px-3 py-1.5 text-gray-700 hover:bg-gray-50 transition-colors text-left"
+          >
+            <Palette className="size-3.5 text-gray-400 shrink-0" />
+            Change color
+          </button>
+          {list.name !== "Favorites" && (
+            <>
+              <div className="h-px bg-gray-100 my-1" />
+              <button
+                onClick={() => { setMenuOpen(false); onDeleteRequest(list.id); }}
+                className="w-full flex items-center gap-2.5 px-3 py-1.5 text-rose-600 hover:bg-rose-50 transition-colors text-left"
+              >
+                <Trash2 className="size-3.5 shrink-0" />
+                Delete list
+              </button>
+            </>
+          )}
+        </div>
+      )}
+    </div>
   );
 }
