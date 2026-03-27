@@ -434,3 +434,24 @@ chore: dependencies, config
 
 \- Ask before: changing URL patterns, modifying existing migrations, adding paid services
 
+
+## Marketplace
+
+### Supabase Storage — Manual Setup Required
+A public storage bucket called **`marketplace-photos`** must be created manually in the Supabase dashboard:
+1. Go to Storage → New bucket
+2. Name: `marketplace-photos`
+3. Enable **Public bucket** (so photo URLs are directly accessible)
+4. Add storage policy to allow authenticated uploads:
+   - Policy name: "Authenticated users can upload"
+   - Operation: INSERT
+   - Expression: `(auth.uid() IS NOT NULL)`
+
+### Listing Expiry Cron Job (TODO)
+A GitHub Actions cron job should be created to mark expired listings:
+```sql
+UPDATE equipment_listings
+SET status = 'expired'
+WHERE expires_at < now() AND status = 'active';
+```
+Until then, the browse page query already filters `expires_at > now()` to exclude expired listings from public view.

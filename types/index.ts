@@ -100,3 +100,58 @@ export type SavedItemWithOrg = {
   org: Organization
   list: Pick<UserList, "id" | "name" | "color"> | null
 }
+
+// ── Equipment Marketplace ──────────────────────────────────────────────────────
+
+export type EquipmentCategory =
+  | "trucks_vehicles"
+  | "containers_dumpsters"
+  | "compactors"
+  | "balers_shredders"
+  | "parts_attachments"
+  | "other_equipment"
+
+export const EQUIPMENT_CATEGORY_LABELS: Record<EquipmentCategory, string> = {
+  trucks_vehicles: "Trucks & Vehicles",
+  containers_dumpsters: "Containers & Dumpsters",
+  compactors: "Compactors",
+  balers_shredders: "Balers & Shredders",
+  parts_attachments: "Parts & Attachments",
+  other_equipment: "Other Equipment",
+}
+
+export const EQUIPMENT_CATEGORIES = Object.keys(
+  EQUIPMENT_CATEGORY_LABELS
+) as EquipmentCategory[]
+
+export type EquipmentCondition = "new" | "used" | "refurbished"
+
+export const EQUIPMENT_CONDITION_LABELS: Record<EquipmentCondition, string> = {
+  new: "New",
+  used: "Used",
+  refurbished: "Refurbished",
+}
+
+export type EquipmentListingStatus = "active" | "sold" | "draft" | "expired"
+
+export type EquipmentListing = {
+  id: string
+  user_id: string
+  title: string
+  description: string
+  category: EquipmentCategory
+  condition: EquipmentCondition
+  price: number | null
+  price_negotiable: boolean
+  quantity: number
+  location_city: string | null
+  location_state: string | null
+  photos: string[]
+  contact_name: string | null
+  contact_email: string | null
+  contact_phone: string | null
+  status: EquipmentListingStatus
+  expires_at: string
+  created_at: string
+  updated_at: string
+}
