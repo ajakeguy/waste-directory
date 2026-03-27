@@ -3,7 +3,8 @@ import type { Metadata } from "next";
 import { FilterSidebar } from "@/components/directory/FilterSidebar";
 import { OrganizationCard } from "@/components/directory/OrganizationCard";
 import { SearchBar } from "@/components/directory/SearchBar";
-import { getOrganizations } from "@/lib/data/organizations";
+import { Pagination } from "@/components/directory/Pagination";
+import { getOrganizationsPaginated } from "@/lib/data/organizations";
 import { getSavedOrgIds } from "@/lib/data/saved-items";
 import { Skeleton } from "@/components/ui/skeleton";
 import { createClient } from "@/lib/supabase/server";
@@ -11,14 +12,17 @@ import { createClient } from "@/lib/supabase/server";
 export const metadata: Metadata = {
   title: "Waste Hauler Directory | WasteDirectory",
   description:
-    "Find licensed waste haulers across Vermont, New York, and Massachusetts. Filter by state, service type, verified status, and more.",
+    "Find licensed waste haulers across the Northeast. Filter by state, service type, verified status, and more.",
 };
+
+const PAGE_SIZE = 25;
 
 type SearchParams = Promise<{
   state?: string;
   service?: string | string[];
   verified?: string;
   q?: string;
+  page?: string;
 }>;
 
 function ResultsSkeleton() {
@@ -48,19 +52,21 @@ async function DirectoryResults({
   verified,
   q,
   userId,
+  page,
 }: {
   state?: string;
   services: string[];
   verified: boolean;
   q?: string;
   userId: string | null;
+  page: number;
 }) {
-  const [organizations, savedOrgIds] = await Promise.all([
-    getOrganizations({ state, services, verified, q }),
+  const [{ data: organizations, count: total }, savedOrgIds] = await Promise.all([
+    getOrganizationsPaginated({ state, services, verified, q }, page, PAGE_SIZE),
     userId ? getSavedOrgIds(userId) : Promise.resolve(new Set<string>()),
   ]);
 
-  if (organizations.length === 0) {
+  if (total === 0) {
     return (
       <div className="text-center py-20">
         <p className="text-lg font-medium text-gray-700 mb-1">
@@ -73,11 +79,14 @@ async function DirectoryResults({
     );
   }
 
+  const from = (page - 1) * PAGE_SIZE + 1;
+  const to = Math.min(page * PAGE_SIZE, total);
+
   return (
     <div className="space-y-3">
       <p className="text-sm text-gray-500 mb-1">
-        {organizations.length} hauler{organizations.length !== 1 ? "s" : ""}{" "}
-        found
+        Showing {from.toLocaleString()}–{to.toLocaleString()} of{" "}
+        {total.toLocaleString()} hauler{total !== 1 ? "s" : ""}
       </p>
       {organizations.map((org) => (
         <OrganizationCard
@@ -87,6 +96,9 @@ async function DirectoryResults({
           userId={userId}
         />
       ))}
+      <Suspense fallback={null}>
+        <Pagination page={page} pageSize={PAGE_SIZE} total={total} />
+      </Suspense>
     </div>
   );
 }
@@ -104,6 +116,8 @@ export default async function DirectoryPage({
       : [params.service]
     : [];
 
+  const page = Math.max(1, parseInt(params.page ?? "1", 10) || 1);
+
   // Get current user for saved-state display
   const supabase = await createClient();
   const {
@@ -117,8 +131,7 @@ export default async function DirectoryPage({
           Waste Hauler Directory
         </h1>
         <p className="text-gray-500 text-sm mt-1">
-          Browse licensed waste haulers across Vermont, New York, and
-          Massachusetts
+          Browse licensed waste haulers across the Northeast
         </p>
       </div>
 
@@ -144,6 +157,7 @@ export default async function DirectoryPage({
               verified={params.verified === "1"}
               q={params.q}
               userId={user?.id ?? null}
+              page={page}
             />
           </Suspense>
         </div>

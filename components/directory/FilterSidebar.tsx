@@ -7,9 +7,10 @@ import { SERVICE_TYPE_LABELS, SERVICE_TYPES } from "@/types";
 
 const STATE_OPTIONS = [
   { label: "All States", value: "" },
-  { label: "Vermont", value: "VT" },
-  { label: "New York", value: "NY" },
   { label: "Massachusetts", value: "MA" },
+  { label: "New York", value: "NY" },
+  { label: "Pennsylvania", value: "PA" },
+  { label: "Vermont", value: "VT" },
 ];
 
 export function FilterSidebar({

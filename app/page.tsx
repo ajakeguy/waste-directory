@@ -22,6 +22,12 @@ const states = [
     abbr: "MA",
     description: "Serving the Bay State",
   },
+  {
+    name: "Pennsylvania",
+    slug: "pennsylvania",
+    abbr: "PA",
+    description: "Serving the Keystone State",
+  },
 ];
 
 export default async function HomePage() {
@@ -32,7 +38,7 @@ export default async function HomePage() {
       <section className="bg-[#2D6A4F] text-white py-24 px-4">
         <div className="max-w-3xl mx-auto text-center">
           <h1 className="text-4xl sm:text-5xl font-bold tracking-tight leading-tight mb-4">
-            Find Waste Haulers Anywhere in New England
+            Find Waste Haulers Across the Northeast
           </h1>
           <p className="text-lg sm:text-xl text-white/80 mb-10">
             The definitive directory for waste industry professionals
@@ -66,10 +72,10 @@ export default async function HomePage() {
             Browse by State
           </h2>
           <p className="text-gray-500 text-center mb-10">
-            Find licensed waste haulers serving Vermont, New York, and Massachusetts
+            Find licensed waste haulers serving Vermont, New York, Massachusetts, and Pennsylvania
           </p>
 
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-6">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
             {states.map((state) => (
               <Link
                 key={state.slug}
@@ -129,7 +135,7 @@ export default async function HomePage() {
             Are you a waste hauler?
           </h2>
           <p className="text-gray-500 mb-6 text-sm">
-            Get your business listed in the directory and reach customers across New England.
+            Get your business listed in the directory and reach customers across the Northeast.
           </p>
           <Link
             href="/directory"

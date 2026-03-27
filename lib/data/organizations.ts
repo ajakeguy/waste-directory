@@ -96,6 +96,48 @@ export async function getOrganizationContacts(
   return data ?? [];
 }
 
+export async function getOrganizationsPaginated(
+  filters: OrganizationFilters = {},
+  page: number = 1,
+  pageSize: number = 25
+): Promise<{ data: Organization[]; count: number }> {
+  const supabase = await createClient();
+  const from = (page - 1) * pageSize;
+  const to = from + pageSize - 1;
+
+  let query = supabase
+    .from("organizations")
+    .select("*", { count: "exact" })
+    .eq("active", true)
+    .order("name")
+    .range(from, to);
+
+  if (filters.state) {
+    query = query.contains("service_area_states", [filters.state]);
+  }
+
+  if (filters.verified) {
+    query = query.eq("verified", true);
+  }
+
+  if (filters.services && filters.services.length > 0) {
+    query = query.overlaps("service_types", filters.services);
+  }
+
+  if (filters.q) {
+    query = query.ilike("name", `%${filters.q}%`);
+  }
+
+  const { data, error, count } = await query;
+
+  if (error) {
+    console.error("Error fetching organizations (paginated):", error);
+    return { data: [], count: 0 };
+  }
+
+  return { data: data ?? [], count: count ?? 0 };
+}
+
 export async function getOrganizationCountByState(
   state: string
 ): Promise<number> {

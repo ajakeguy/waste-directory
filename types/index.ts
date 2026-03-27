@@ -53,18 +53,21 @@ export const STATE_SLUG_TO_CODE: Record<string, string> = {
   vermont: "VT",
   "new-york": "NY",
   massachusetts: "MA",
+  pennsylvania: "PA",
 }
 
 export const STATE_CODE_TO_SLUG: Record<string, string> = {
   VT: "vermont",
   NY: "new-york",
   MA: "massachusetts",
+  PA: "pennsylvania",
 }
 
 export const STATE_SLUG_TO_NAME: Record<string, string> = {
   vermont: "Vermont",
   "new-york": "New York",
   massachusetts: "Massachusetts",
+  pennsylvania: "Pennsylvania",
 }
 
 export const VALID_STATE_SLUGS = Object.keys(STATE_SLUG_TO_CODE)
