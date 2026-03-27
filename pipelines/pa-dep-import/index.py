@@ -66,7 +66,7 @@ EXCEL_URL = (
 )
 
 DATA_SOURCE = "pa_dep_wtsp_2026"
-SAFE_MAX    = 5000
+SAFE_MAX    = 7000
 BATCH_SIZE  = 50
 
 # Active status values (case-insensitive upper match)
