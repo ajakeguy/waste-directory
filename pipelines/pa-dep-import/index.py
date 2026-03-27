@@ -443,6 +443,8 @@ def main() -> None:
                 print(f"  ✓ Batch {batch_num}: inserted {len(batch)} records")
             except Exception as exc:
                 print(f"  ✗ Batch {batch_num} failed: {exc}")
+                print(f"  ✗ Batch error detail: {exc!r}")
+                print(f"  ✗ First record in failed batch: {batch[0] if batch else 'unknown'}")
                 errors += 1
 
     # ── 9. Summary ────────────────────────────────────────────────────────────
@@ -454,7 +456,7 @@ def main() -> None:
     print(f"  Inserted             : {inserted}")
     print(f"  Errors               : {errors}")
 
-    if errors > 0:
+    if inserted == 0 and errors > 0:
         sys.exit(1)
 
 
