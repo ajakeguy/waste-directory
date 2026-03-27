@@ -2,7 +2,7 @@ import { redirect } from "next/navigation";
 import type { Metadata } from "next";
 import { createClient } from "@/lib/supabase/server";
 import { DashboardClient } from "@/components/dashboard/DashboardClient";
-import type { Organization, SavedItemWithOrg, UserList } from "@/types";
+import type { Organization, SavedItemWithOrg, UserList, EquipmentListing } from "@/types";
 
 export const metadata: Metadata = {
   title: "Dashboard | WasteDirectory",
@@ -79,12 +79,22 @@ export default async function DashboardPage() {
       }));
   }
 
+  // User's marketplace listings (all statuses)
+  const { data: listingsData } = await supabase
+    .from("equipment_listings")
+    .select("*")
+    .eq("user_id", user.id)
+    .order("created_at", { ascending: false });
+
+  const myListings: EquipmentListing[] = (listingsData ?? []) as EquipmentListing[];
+
   return (
     <DashboardClient
       userId={user.id}
       displayName={displayName}
       lists={lists}
       savedItems={savedItems}
+      myListings={myListings}
     />
   );
 }

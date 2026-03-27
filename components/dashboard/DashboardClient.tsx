@@ -24,7 +24,8 @@ import {
 } from "@/components/ui/dialog";
 import { OrganizationCard } from "@/components/directory/OrganizationCard";
 import { NewListModal } from "@/components/dashboard/NewListModal";
-import type { UserList, SavedItemWithOrg } from "@/types";
+import { MyListings } from "@/components/dashboard/MyListings";
+import type { UserList, SavedItemWithOrg, EquipmentListing } from "@/types";
 
 // ── Color presets (shared with NewListModal) ──────────────────────────────────
 
@@ -44,6 +45,7 @@ type Props = {
   displayName: string;
   lists: UserList[];
   savedItems: SavedItemWithOrg[];
+  myListings: EquipmentListing[];
 };
 
 // ── Main client component ─────────────────────────────────────────────────────
@@ -53,6 +55,7 @@ export function DashboardClient({
   displayName,
   lists: initialLists,
   savedItems,
+  myListings,
 }: Props) {
   const [lists, setLists] = useState<UserList[]>(initialLists);
   const [activeListId, setActiveListId] = useState<string | "all">("all");
@@ -259,6 +262,11 @@ export function DashboardClient({
             )}
           </main>
         </div>
+      </div>
+
+      {/* My Marketplace Listings */}
+      <div className="max-w-6xl mx-auto px-4 sm:px-6 pb-10">
+        <MyListings listings={myListings} />
       </div>
 
       {/* New list modal */}
