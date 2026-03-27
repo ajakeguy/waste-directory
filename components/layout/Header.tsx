@@ -2,6 +2,7 @@ import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { createClient } from "@/lib/supabase/server";
 import { UserMenu } from "@/components/layout/UserMenu";
+import { HeaderShell } from "@/components/layout/HeaderShell";
 
 export default async function Header() {
   const supabase = await createClient();
@@ -21,7 +22,7 @@ export default async function Header() {
   }
 
   return (
-    <header className="bg-[#2D6A4F] text-white">
+    <HeaderShell>
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
         {/* Site name */}
         <Link
@@ -62,6 +63,6 @@ export default async function Header() {
           </Link>
         )}
       </div>
-    </header>
+    </HeaderShell>
   );
 }
