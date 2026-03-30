@@ -138,6 +138,17 @@ export async function getOrganizationsPaginated(
   return { data: data ?? [], count: count ?? 0 };
 }
 
+export async function getOrganizationsByState(
+  state: string,
+  {
+    search,
+    page = 1,
+    perPage = 25,
+  }: { search?: string; page?: number; perPage?: number } = {}
+): Promise<{ data: Organization[]; count: number }> {
+  return getOrganizationsPaginated({ state, q: search }, page, perPage);
+}
+
 export async function getOrganizationCountByState(
   state: string
 ): Promise<number> {

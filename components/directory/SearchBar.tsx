@@ -1,31 +1,47 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useRouter, useSearchParams } from "next/navigation";
+import { useRouter, useSearchParams, usePathname } from "next/navigation";
 import { Search, X } from "lucide-react";
 
-export function SearchBar() {
+/**
+ * Debounced search bar that updates a URL search param on the current pathname.
+ *
+ * @param paramName - The URL param to read/write (default "q").
+ *   Pass "search" when using on state landing pages (?search=...).
+ * @param placeholder - Input placeholder text.
+ */
+export function SearchBar({
+  paramName = "q",
+  placeholder = "Search haulers by name...",
+}: {
+  paramName?: string;
+  placeholder?: string;
+}) {
   const router = useRouter();
+  const pathname = usePathname();
   const searchParams = useSearchParams();
-  const [value, setValue] = useState(searchParams.get("q") ?? "");
+  const [value, setValue] = useState(searchParams.get(paramName) ?? "");
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Sync input when URL changes externally (e.g. filter sidebar clears q)
+  // Sync input value when URL param changes externally (e.g. filter sidebar resets)
   useEffect(() => {
-    setValue(searchParams.get("q") ?? "");
-  }, [searchParams]);
+    setValue(searchParams.get(paramName) ?? "");
+  }, [searchParams, paramName]);
 
   const pushQuery = useCallback(
     (q: string) => {
       const params = new URLSearchParams(searchParams.toString());
       if (q.trim()) {
-        params.set("q", q.trim());
+        params.set(paramName, q.trim());
       } else {
-        params.delete("q");
+        params.delete(paramName);
       }
-      router.push(`/directory?${params.toString()}`);
+      // Reset to page 1 whenever the search changes
+      params.delete("page");
+      router.push(`${pathname}?${params.toString()}`);
     },
-    [router, searchParams]
+    [router, pathname, searchParams, paramName]
   );
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -48,7 +64,7 @@ export function SearchBar() {
         type="text"
         value={value}
         onChange={handleChange}
-        placeholder="Search haulers by name..."
+        placeholder={placeholder}
         className="w-full pl-9 pr-9 py-2.5 rounded-lg border border-gray-200 bg-white text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-[#2D6A4F]/25 focus:border-[#2D6A4F] placeholder:text-gray-400 transition-colors"
       />
       {value && (

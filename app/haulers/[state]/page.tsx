@@ -2,7 +2,7 @@
  * app/haulers/[state]/page.tsx
  *
  * Handles two URL shapes under /haulers/:
- *   /haulers/vermont          → state landing page
+ *   /haulers/vermont          → state landing page (search + pagination)
  *   /haulers/some-org-slug    → hauler profile page
  *
  * Next.js only allows one dynamic segment folder at this path level, so
@@ -24,11 +24,13 @@ import {
   UserCircle,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
-import { FilterSidebar } from "@/components/directory/FilterSidebar";
-import { OrganizationCard } from "@/components/directory/OrganizationCard";
 import { Skeleton } from "@/components/ui/skeleton";
+import { OrganizationCard } from "@/components/directory/OrganizationCard";
+import { SearchBar } from "@/components/directory/SearchBar";
+import { PerPageSelector } from "@/components/directory/PerPageSelector";
+import { Pagination } from "@/components/directory/Pagination";
 import {
-  getOrganizations,
+  getOrganizationsByState,
   getOrganizationBySlug,
   getOrganizationContacts,
 } from "@/lib/data/organizations";
@@ -42,11 +44,17 @@ import {
   SERVICE_TYPE_LABELS,
 } from "@/types";
 
+const VALID_PER_PAGE = [25, 50, 100] as const;
+
 // ── Shared types ──────────────────────────────────────────────────────────────
 
 type Props = {
   params: Promise<{ state: string }>;
-  searchParams: Promise<{ service?: string | string[]; verified?: string }>;
+  searchParams: Promise<{
+    search?: string;
+    page?: string;
+    per_page?: string;
+  }>;
 };
 
 // ── Metadata ──────────────────────────────────────────────────────────────────
@@ -95,11 +103,8 @@ export function generateStaticParams() {
 function ResultsSkeleton() {
   return (
     <div className="space-y-3">
-      {Array.from({ length: 4 }).map((_, i) => (
-        <div
-          key={i}
-          className="bg-white rounded-xl border border-gray-200 p-5"
-        >
+      {Array.from({ length: 5 }).map((_, i) => (
+        <div key={i} className="bg-white rounded-xl border border-gray-200 p-5">
           <Skeleton className="h-5 w-48 mb-2" />
           <Skeleton className="h-4 w-32 mb-4" />
           <div className="flex gap-2">
@@ -114,28 +119,35 @@ function ResultsSkeleton() {
 
 async function StateResults({
   stateCode,
-  services,
-  verified,
+  stateName,
+  search,
+  page,
+  perPage,
   userId,
 }: {
   stateCode: string;
-  services: string[];
-  verified: boolean;
+  stateName: string;
+  search?: string;
+  page: number;
+  perPage: number;
   userId: string | null;
 }) {
-  const [organizations, savedOrgIds] = await Promise.all([
-    getOrganizations({ state: stateCode, services, verified }),
-    userId ? getSavedOrgIds(userId) : Promise.resolve(new Set<string>()),
-  ]);
+  const [{ data: organizations, count: total }, savedOrgIds] =
+    await Promise.all([
+      getOrganizationsByState(stateCode, { search, page, perPage }),
+      userId ? getSavedOrgIds(userId) : Promise.resolve(new Set<string>()),
+    ]);
 
-  if (organizations.length === 0) {
+  if (total === 0) {
     return (
       <div className="text-center py-20">
         <p className="text-lg font-medium text-gray-700 mb-1">
           No haulers found
         </p>
         <p className="text-sm text-gray-500">
-          Try adjusting your filters or check back as we add more listings.
+          {search
+            ? 'No results for "' + search + '". Try a different search term.'
+            : "Check back as we add more listings."}
         </p>
       </div>
     );
@@ -143,25 +155,35 @@ async function StateResults({
 
   return (
     <div className="space-y-3">
-      <p className="text-sm text-gray-500 mb-1">
-        {organizations.length} hauler{organizations.length !== 1 ? "s" : ""}{" "}
-        found
+      <p className="text-sm text-gray-500">
+        {total.toLocaleString()} hauler{total !== 1 ? "s" : ""} found in{" "}
+        {stateName}
       </p>
       {organizations.map((org) => (
-        <OrganizationCard key={org.id} org={org} savedOrgIds={savedOrgIds} userId={userId} />
+        <OrganizationCard
+          key={org.id}
+          org={org}
+          savedOrgIds={savedOrgIds}
+          userId={userId}
+        />
       ))}
+      <Suspense fallback={null}>
+        <Pagination page={page} pageSize={perPage} total={total} />
+      </Suspense>
     </div>
   );
 }
 
 async function StateLandingPage({
   segment,
-  services,
-  verified,
+  search,
+  page,
+  perPage,
 }: {
   segment: string;
-  services: string[];
-  verified: boolean;
+  search?: string;
+  page: number;
+  perPage: number;
 }) {
   const stateCode = STATE_SLUG_TO_CODE[segment];
   const stateName = STATE_SLUG_TO_NAME[segment];
@@ -169,47 +191,54 @@ async function StateLandingPage({
   if (!stateCode || !stateName) notFound();
 
   const supabase = await createClient();
-  const [allOrgs, { data: { user } }] = await Promise.all([
-    getOrganizations({ state: stateCode }),
-    supabase.auth.getUser(),
-  ]);
-  const totalCount = allOrgs.length;
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
 
   return (
     <div>
       {/* State hero */}
       <section className="bg-[#2D6A4F] text-white py-14 px-4">
-        <div className="max-w-7xl mx-auto">
+        <div className="max-w-5xl mx-auto">
           <p className="text-white/60 text-xs font-semibold uppercase tracking-widest mb-2">
             Waste Hauler Directory
           </p>
           <h1 className="text-3xl sm:text-4xl font-bold mb-2">{stateName}</h1>
           <p className="text-white/80 text-lg">
-            {totalCount > 0
-              ? `${totalCount} hauler${totalCount !== 1 ? "s" : ""} serving ${stateName}`
-              : `Browse waste haulers serving ${stateName}`}
+            Licensed waste haulers serving {stateName}
           </p>
         </div>
       </section>
 
-      {/* Directory with filters */}
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-        <div className="flex flex-col md:flex-row gap-4 md:gap-6 md:items-start">
-          <Suspense fallback={<div className="hidden md:block md:w-64 md:shrink-0" />}>
-            <FilterSidebar defaultState={stateCode} />
-          </Suspense>
-
-          <div className="flex-1 min-w-0">
-            <Suspense fallback={<ResultsSkeleton />}>
-              <StateResults
-                stateCode={stateCode}
-                services={services}
-                verified={verified}
-                userId={user?.id ?? null}
-              />
+      {/* Search + results */}
+      <div className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        {/* Toolbar: search bar + per-page selector */}
+        <div className="flex flex-col sm:flex-row gap-3 mb-6">
+          <div className="flex-1">
+            <Suspense
+              fallback={
+                <div className="w-full h-[42px] rounded-lg border border-gray-200 bg-gray-50 animate-pulse" />
+              }
+            >
+              <SearchBar paramName="search" />
             </Suspense>
           </div>
+          <Suspense fallback={null}>
+            <PerPageSelector />
+          </Suspense>
         </div>
+
+        {/* Results list */}
+        <Suspense fallback={<ResultsSkeleton />}>
+          <StateResults
+            stateCode={stateCode}
+            stateName={stateName}
+            search={search}
+            page={page}
+            perPage={perPage}
+            userId={user?.id ?? null}
+          />
+        </Suspense>
       </div>
     </div>
   );
@@ -354,7 +383,8 @@ async function HaulerProfilePage({ segment }: { segment: string }) {
           <div className="flex flex-wrap gap-2">
             {org.service_types.map((type) => (
               <Badge key={type} variant="outline">
-                {SERVICE_TYPE_LABELS[type as keyof typeof SERVICE_TYPE_LABELS] ?? type}
+                {SERVICE_TYPE_LABELS[type as keyof typeof SERVICE_TYPE_LABELS] ??
+                  type}
               </Badge>
             ))}
           </div>
@@ -468,17 +498,18 @@ export default async function HaulerOrStatePage({ params, searchParams }: Props)
   const sp = await searchParams;
 
   if (VALID_STATE_SLUGS.includes(segment)) {
-    const services = sp.service
-      ? Array.isArray(sp.service)
-        ? sp.service
-        : [sp.service]
-      : [];
+    const page = Math.max(1, parseInt(sp.page ?? "1", 10) || 1);
+    const rawPerPage = parseInt(sp.per_page ?? "25", 10);
+    const perPage = (VALID_PER_PAGE as readonly number[]).includes(rawPerPage)
+      ? rawPerPage
+      : 25;
 
     return (
       <StateLandingPage
         segment={segment}
-        services={services}
-        verified={sp.verified === "1"}
+        search={sp.search}
+        page={page}
+        perPage={perPage}
       />
     );
   }
