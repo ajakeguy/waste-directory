@@ -28,6 +28,12 @@ const states = [
     abbr: "PA",
     description: "Serving the Keystone State",
   },
+  {
+    name: "New Jersey",
+    slug: "new-jersey",
+    abbr: "NJ",
+    description: "Serving the Garden State",
+  },
 ];
 
 export default async function HomePage() {
@@ -72,10 +78,10 @@ export default async function HomePage() {
             Browse by State
           </h2>
           <p className="text-gray-500 text-center mb-10">
-            Find licensed waste haulers serving Vermont, New York, Massachusetts, and Pennsylvania
+            Find licensed waste haulers serving Vermont, New York, Massachusetts, Pennsylvania, and New Jersey
           </p>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-6">
             {states.map((state) => (
               <Link
                 key={state.slug}

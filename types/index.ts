@@ -54,6 +54,7 @@ export const STATE_SLUG_TO_CODE: Record<string, string> = {
   "new-york": "NY",
   massachusetts: "MA",
   pennsylvania: "PA",
+  "new-jersey": "NJ",
 }
 
 export const STATE_CODE_TO_SLUG: Record<string, string> = {
@@ -61,6 +62,7 @@ export const STATE_CODE_TO_SLUG: Record<string, string> = {
   NY: "new-york",
   MA: "massachusetts",
   PA: "pennsylvania",
+  NJ: "new-jersey",
 }
 
 export const STATE_SLUG_TO_NAME: Record<string, string> = {
@@ -68,6 +70,7 @@ export const STATE_SLUG_TO_NAME: Record<string, string> = {
   "new-york": "New York",
   massachusetts: "Massachusetts",
   pennsylvania: "Pennsylvania",
+  "new-jersey": "New Jersey",
 }
 
 export const VALID_STATE_SLUGS = Object.keys(STATE_SLUG_TO_CODE)

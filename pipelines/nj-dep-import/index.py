@@ -1,18 +1,24 @@
 """
 NJ DEP A-901 Commercial Solid Waste Transporter Import Pipeline
 
-Probes all known data sources for NJ A-901 licensed solid waste transporters.
-If machine-readable data is found, parses and inserts into Supabase.
-If no data is available, prints a full diagnostic report with next steps.
+Two operating modes:
+  1. LOCAL FILE MODE (primary): pass an Excel file path as the first argument,
+     or place the file at DEFAULT_FILE_PATH. Parses and inserts into Supabase.
 
-Data source: NJ DEP A-901 licensing program
-  - Primary target : NJ Open Data Portal (data.nj.gov)
-  - Fallback target: NJDEP wastedecals portal / direct file download
+  2. PROBE MODE (automated/monthly): no file provided → probes all known NJ
+     data source URLs for newly published machine-readable data. Prints a full
+     diagnostic report with next steps if nothing is found.
 
-As of 2026-03: No public machine-readable dataset exists. The NJDEP
-dep.nj.gov domain is behind Imperva/Incapsula WAF and blocks all
-automated requests. data.nj.gov has zero NJ-specific A-901 datasets.
-An OPRA request to NJDEP is the recommended path to obtain this data.
+Usage:
+  # Local file import (after obtaining Excel from NJDEP):
+  python pipelines/nj-dep-import/index.py path/to/A-901_Licensed_Companies.xlsx
+
+  # Probe mode (GitHub Actions cron, or manual):
+  python pipelines/nj-dep-import/index.py
+
+File columns expected (A-901 Excel export from NJDEP):
+  NJEMS PI #, DEP #, A-901 Bill #, Transporter Name, Street Address,
+  Site City Name, City, County, State, Zip Code
 """
 
 import os
@@ -30,8 +36,12 @@ SUPABASE_URL = os.environ["SUPABASE_URL"]
 SUPABASE_SERVICE_ROLE_KEY = os.environ["SUPABASE_SERVICE_ROLE_KEY"]
 
 DATA_SOURCE = "nj_dep_a901_2026"
-SAFE_MAX = 3000
-BATCH_SIZE = 100
+SAFE_MAX = 2000
+BATCH_SIZE = 50
+
+# Default local file path — place the NJDEP A-901 Excel export here,
+# or pass the path as the first command-line argument.
+DEFAULT_FILE_PATH = "pipelines/nj-dep-import/data/nj_a901_haulers.xlsx"
 
 HEADERS = {
     "User-Agent": (
@@ -39,34 +49,26 @@ HEADERS = {
         "AppleWebKit/537.36 (KHTML, like Gecko) "
         "Chrome/120.0.0.0 Safari/537.36"
     ),
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     "Accept-Language": "en-US,en;q=0.5",
-    "Accept-Encoding": "gzip, deflate, br",
     "Connection": "keep-alive",
-    "Upgrade-Insecure-Requests": "1",
 }
 
-# ── Confirmed data.nj.gov Socrata dataset IDs ─────────────────────────────────
-# Populate this list if NJ ever publishes an A-901 dataset on data.nj.gov.
-# Format: ("dataset_id", "expected_name_hint")
+# ── Probe URLs (used when no local file is provided) ─────────────────────────
+# Confirmed data.nj.gov Socrata dataset IDs — populate if NJ ever publishes one.
 SOCRATA_CANDIDATES: list[tuple[str, str]] = []
 
-# ── Direct file URLs to try ───────────────────────────────────────────────────
-# Add any specific Excel/CSV/PDF download URLs here if discovered manually.
-FILE_CANDIDATES: list[tuple[str, str]] = []
-
-# ── HTML pages to probe for download links ────────────────────────────────────
 HTML_PROBE_URLS = [
     (
-        "NJ Open Data — solid waste transporter search",
+        "NJ Open Data — solid waste transporter",
         "https://data.nj.gov/api/catalog/v1?q=solid+waste+transporter",
     ),
     (
-        "NJ Open Data — A-901 search",
+        "NJ Open Data — A-901",
         "https://data.nj.gov/api/catalog/v1?q=a901",
     ),
     (
-        "NJ Open Data — waste hauler search",
+        "NJ Open Data — waste hauler",
         "https://data.nj.gov/api/catalog/v1?q=waste+hauler+license",
     ),
     (
@@ -78,27 +80,10 @@ HTML_PROBE_URLS = [
         "https://dep.nj.gov/wastedecals/commercial-solid-waste-transporters/",
     ),
     (
-        "NJDEP DSHW A-901 page",
-        "https://dep.nj.gov/dshw/a901/",
-    ),
-    (
-        "NJ DEP license list (legacy URL — expected 404)",
+        "NJDEP license list (legacy — expected 404)",
         "https://www.nj.gov/dep/dshw/hwr/liclist.htm",
     ),
 ]
-
-# ── Column alias map (update once actual column names are known) ───────────────
-COLUMN_ALIASES: dict[str, list[str]] = {
-    "name":    ["company name", "business name", "hauler name", "transporter name",
-                "name", "company", "business", "firm name"],
-    "city":    ["city", "town", "municipality"],
-    "state":   ["state", "st"],
-    "zip":     ["zip", "zip code", "postal code", "zipcode", "zip_code"],
-    "phone":   ["phone", "phone number", "telephone", "contact phone", "phone_number"],
-    "address": ["address", "street", "street address", "mailing address", "street_address"],
-    "license": ["registration number", "license number", "a-901 number", "permit number",
-                "registration_number", "license_no", "registration_no", "a901"],
-}
 
 # ── Slug helpers ──────────────────────────────────────────────────────────────
 
@@ -111,7 +96,7 @@ def slugify(text: str) -> str:
 def make_slug(name: str, city: str) -> str:
     return slugify(f"{name} {city}")[:80]
 
-# ── Supabase slug dedup ───────────────────────────────────────────────────────
+# ── Supabase helpers ──────────────────────────────────────────────────────────
 
 def fetch_existing_slugs(supabase: Client) -> set:
     existing: set[str] = set()
@@ -133,179 +118,86 @@ def fetch_existing_slugs(supabase: Client) -> set:
     print(f"  Existing slugs in DB: {len(existing):,}")
     return existing
 
-# ── URL probing ───────────────────────────────────────────────────────────────
+# ── Excel parsing ─────────────────────────────────────────────────────────────
 
-def probe_url(label: str, url: str) -> dict:
-    """Probe a URL and report status, content type, size, and any download links."""
-    print(f"\n── {label}")
-    print(f"   URL: {url}")
-    result: dict = {
-        "label": label,
-        "url": url,
-        "status": None,
-        "content_type": None,
-        "size": 0,
-        "download_links": [],
-        "json_datasets": [],
-        "content": None,
-    }
-    try:
-        r = requests.get(url, headers=HEADERS, timeout=20, allow_redirects=True)
-        ct = r.headers.get("Content-Type", "unknown")
-        result.update({"status": r.status_code, "content_type": ct, "size": len(r.content)})
-
-        print(f"   Status : {r.status_code}")
-        print(f"   Type   : {ct}")
-        print(f"   Size   : {len(r.content):,} bytes")
-
-        if r.status_code == 200:
-            # HTML: look for download links
-            if "html" in ct.lower():
-                links = re.findall(
-                    r'href=["\']([^"\']+\.(xlsx?|csv|pdf|zip))["\']',
-                    r.text,
-                    re.IGNORECASE,
-                )
-                if links:
-                    result["download_links"] = [l[0] for l in links[:20]]
-                    print(f"   Downloads found:")
-                    for link in result["download_links"]:
-                        print(f"     → {link}")
-                else:
-                    print(f"   No download links (.xlsx, .csv, .pdf) found in page")
-
-            # JSON: check Socrata catalog or raw data
-            elif "json" in ct.lower():
-                try:
-                    data = r.json()
-                    # Socrata catalog response
-                    if "resultSetSize" in data:
-                        count = data["resultSetSize"]
-                        print(f"   Catalog results: {count} dataset(s)")
-                        for d in (data.get("results") or [])[:8]:
-                            name = d.get("resource", {}).get("name", "?")
-                            domain = d.get("metadata", {}).get("domain", "?")
-                            uid = d.get("resource", {}).get("id", "?")
-                            upd = d.get("resource", {}).get("updatedAt", "?")
-                            result["json_datasets"].append(
-                                {"id": uid, "domain": domain, "name": name}
-                            )
-                            print(f"     • [{domain}] {name}  id={uid}  updated={upd}")
-                    # Raw JSON array (Socrata resource endpoint)
-                    elif isinstance(data, list):
-                        print(f"   JSON array: {len(data)} row(s)")
-                        if data:
-                            print(f"   Columns: {list(data[0].keys())}")
-                        result["content"] = r.content
-                except Exception:
-                    pass
-
-            # Binary file (Excel, CSV, etc.)
-            elif any(
-                x in ct.lower()
-                for x in ["excel", "spreadsheet", "csv", "octet-stream", "openxml"]
-            ):
-                print(f"   ✓ Binary file — may be parseable")
-                result["content"] = r.content
-
-    except requests.exceptions.ConnectionError as e:
-        print(f"   Error  : Connection blocked/refused — {type(e).__name__}")
-    except Exception as e:
-        print(f"   Error  : {e}")
-
-    return result
-
-
-def probe_socrata(dataset_id: str) -> dict | None:
-    """Probe a specific data.nj.gov Socrata dataset."""
-    url = f"https://data.nj.gov/resource/{dataset_id}.json?$limit=5"
-    print(f"\n── Socrata probe: {dataset_id}")
-    print(f"   URL: {url}")
-    try:
-        r = requests.get(url, timeout=15)
-        ct = r.headers.get("Content-Type", "unknown")
-        print(f"   Status : {r.status_code}")
-        print(f"   Type   : {ct}")
-        if r.status_code == 200:
-            rows = r.json()
-            print(f"   Rows   : {len(rows)}")
-            if rows:
-                print(f"   Columns: {list(rows[0].keys())}")
-                return {"id": dataset_id, "rows": rows}
-        elif r.status_code == 404:
-            print(f"   Result : Dataset not found (404)")
-        else:
-            print(f"   Result : HTTP {r.status_code}")
-    except Exception as e:
-        print(f"   Error  : {e}")
-    return None
-
-# ── Excel/CSV parser ──────────────────────────────────────────────────────────
-
-def parse_excel_or_csv(content: bytes, content_type: str) -> list[dict] | None:
-    try:
-        if "csv" in content_type.lower():
-            df = pd.read_csv(BytesIO(content), dtype=str)
-        else:
-            df = pd.read_excel(BytesIO(content), dtype=str)
-        df.columns = [str(c).strip().lower() for c in df.columns]
-        df.dropna(how="all", inplace=True)
-        print(f"  Columns : {list(df.columns)}")
-        print(f"  Rows    : {len(df)}")
-        if df.empty:
-            return None
-        print(f"  Sample  :\n{df.head(3).to_string()}")
-        return df.to_dict("records")
-    except Exception as e:
-        print(f"  Parse error: {e}")
+def clean_zip(raw: object) -> str | None:
+    """Extract the first 5 digits from a zip code value."""
+    if raw is None:
         return None
+    s = re.sub(r"\D", "", str(raw))
+    return s[:5] if len(s) >= 5 else (s or None)
 
-# ── Column finder ─────────────────────────────────────────────────────────────
 
-def find_column(cols: list[str], aliases: list[str]) -> str | None:
-    for alias in aliases:
-        for col in cols:
-            if alias.lower() == col.lower():
-                return col
-    return None
+def format_license(raw: object) -> str | None:
+    """Zero-pad A-901 Bill # to 6 digits."""
+    if raw is None:
+        return None
+    s = str(raw).strip()
+    if not s or s.lower() in {"nan", "none", ""}:
+        return None
+    # Strip any non-numeric prefix/suffix, keep the number
+    digits = re.sub(r"\D", "", s)
+    if digits:
+        return digits.zfill(6)
+    return s  # return as-is if no digits found
 
-# ── Record mapper ─────────────────────────────────────────────────────────────
 
-def map_records(raw_rows: list[dict]) -> list[dict]:
-    if not raw_rows:
-        return []
+def parse_excel(path: str) -> pd.DataFrame:
+    """
+    Parse the NJDEP A-901 Excel export.
+    header=1: row 0 is blank/metadata, row 1 contains the actual column headers.
+    """
+    df = pd.read_excel(path, header=1, dtype=str)
+    df.columns = [str(c).strip() for c in df.columns]
+    # Drop fully blank rows
+    df.dropna(how="all", inplace=True)
+    print(f"  Columns: {list(df.columns)}")
+    print(f"  Rows   : {len(df):,}")
+    return df
 
-    cols = list(raw_rows[0].keys())
-    col_map = {key: find_column(cols, aliases) for key, aliases in COLUMN_ALIASES.items()}
 
-    print(f"\nColumn mapping:")
-    for key, mapped in col_map.items():
-        print(f"  {key:10} → {mapped or '(not found)'}")
-
+def map_records(df: pd.DataFrame) -> list[dict]:
+    """Map DataFrame rows to organization insert dicts."""
     records = []
-    for row in raw_rows:
-        name = (row.get(col_map.get("name") or "", "") or "").strip()
+    skipped_blank = 0
+
+    for _, row in df.iterrows():
+        name = str(row.get("Transporter Name", "") or "").strip()
         if not name or name.lower() in {"nan", "none", ""}:
+            skipped_blank += 1
             continue
 
-        license_num = (row.get(col_map.get("license") or "", "") or "").strip() or None
+        # City: prefer 'City', fall back to 'Site City Name'
+        city = str(row.get("City", "") or "").strip()
+        if not city or city.lower() in {"nan", "none", ""}:
+            city = str(row.get("Site City Name", "") or "").strip()
+        city = city if city and city.lower() not in {"nan", "none"} else None
+
+        state = str(row.get("State", "") or "").strip().upper()
+        state = state if state and state not in {"NAN", "NONE", ""} else "NJ"
+
+        zip_code = clean_zip(row.get("Zip Code"))
+        license_num = format_license(row.get("A-901 Bill #"))
 
         rec = {
             "name": name,
-            "address": (row.get(col_map.get("address") or "", "") or "").strip() or None,
-            "city": (row.get(col_map.get("city") or "", "") or "").strip() or None,
-            "state": "NJ",
-            "zip": (row.get(col_map.get("zip") or "", "") or "").strip() or None,
-            "phone": (row.get(col_map.get("phone") or "", "") or "").strip() or None,
+            "address": str(row.get("Street Address", "") or "").strip() or None,
+            "city": city,
+            "state": state,
+            "zip": zip_code,
             "org_type": "hauler",
             "service_types": ["commercial", "residential"],
             "service_area_states": ["NJ"],
-            "data_source": DATA_SOURCE + (f":{license_num}" if license_num else ""),
+            "data_source": f"{DATA_SOURCE}" + (f":{license_num}" if license_num else ""),
             "verified": True,
             "active": True,
         }
+        # Remove None values to avoid sending nulls for unset fields
+        rec = {k: v for k, v in rec.items() if v is not None or k in {"active", "verified"}}
         records.append(rec)
 
+    print(f"  Skipped (blank name): {skipped_blank}")
+    print(f"  Mappable records    : {len(records):,}")
     return records
 
 # ── Insert pipeline ───────────────────────────────────────────────────────────
@@ -329,6 +221,7 @@ def slug_dedup_and_insert(
         existing_slugs.add(slug)
 
     to_insert = [r for r in records if "slug" in r]
+    print(f"  New records to insert: {len(to_insert):,}  (skipped {skipped} duplicates)")
 
     for i in range(0, len(to_insert), BATCH_SIZE):
         batch = to_insert[i : i + BATCH_SIZE]
@@ -336,14 +229,176 @@ def slug_dedup_and_insert(
         try:
             supabase.table("organizations").insert(batch).execute()
             inserted += len(batch)
-            print(f"  ✓ Batch {batch_num}: inserted {len(batch)} records")
+            print(f"  ✓ Batch {batch_num}: inserted {len(batch)}")
         except Exception as exc:
             print(f"  ✗ Batch {batch_num} failed: {exc}")
             print(f"  ✗ Detail: {exc!r}")
-            print(f"  ✗ First record: {batch[0] if batch else 'unknown'}")
+            print(f"  ✗ First record in failed batch: {batch[0] if batch else 'unknown'}")
             errors += 1
 
     return inserted, skipped, errors
+
+# ── Probe mode helpers ────────────────────────────────────────────────────────
+
+def probe_url(label: str, url: str) -> dict:
+    print(f"\n── {label}")
+    print(f"   URL: {url}")
+    result: dict = {"label": label, "url": url, "status": None, "size": 0}
+    try:
+        r = requests.get(url, headers=HEADERS, timeout=20, allow_redirects=True)
+        ct = r.headers.get("Content-Type", "unknown")
+        result.update({"status": r.status_code, "content_type": ct, "size": len(r.content)})
+        print(f"   Status : {r.status_code}")
+        print(f"   Type   : {ct}")
+        print(f"   Size   : {len(r.content):,} bytes")
+
+        if r.status_code == 200:
+            if "html" in ct.lower():
+                links = re.findall(
+                    r'href=["\']([^"\']+\.(xlsx?|csv|pdf|zip))["\']',
+                    r.text, re.IGNORECASE,
+                )
+                if links:
+                    print(f"   Downloads found:")
+                    for lnk in links[:10]:
+                        print(f"     → {lnk[0]}")
+                else:
+                    print(f"   No download links found")
+            elif "json" in ct.lower():
+                try:
+                    data = r.json()
+                    if "resultSetSize" in data:
+                        print(f"   Catalog results: {data['resultSetSize']} dataset(s)")
+                        for d in (data.get("results") or [])[:5]:
+                            nm = d.get("resource", {}).get("name", "?")
+                            dom = d.get("metadata", {}).get("domain", "?")
+                            uid = d.get("resource", {}).get("id", "?")
+                            print(f"     • [{dom}] {nm}  id={uid}")
+                except Exception:
+                    pass
+    except requests.exceptions.ConnectionError as e:
+        print(f"   Error  : Connection blocked — {type(e).__name__}")
+    except Exception as e:
+        print(f"   Error  : {e}")
+    return result
+
+# ── Mode: local file import ───────────────────────────────────────────────────
+
+def run_file_import(file_path: str) -> None:
+    print(f"Mode      : LOCAL FILE IMPORT")
+    print(f"File      : {file_path}")
+
+    if not os.path.exists(file_path):
+        print(f"\n✗ File not found: {file_path}")
+        print("""
+To use this pipeline in local file mode:
+  1. Obtain the NJ A-901 hauler list from NJDEP (see probe mode output for
+     instructions, or file an OPRA request at https://www.nj.gov/dep/opra/)
+  2. Save the Excel file to one of:
+       pipelines/nj-dep-import/data/nj_a901_haulers.xlsx  (default path)
+       any path of your choice (pass as command-line argument)
+  3. Run: python pipelines/nj-dep-import/index.py path/to/file.xlsx
+""")
+        sys.exit(0)
+
+    supabase: Client = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
+
+    print(f"\nParsing Excel file...")
+    df = parse_excel(file_path)
+
+    # Show unique status/license values for diagnostics
+    if "A-901 Bill #" in df.columns:
+        sample = df["A-901 Bill #"].dropna().head(5).tolist()
+        print(f"  A-901 Bill # sample: {sample}")
+
+    records = map_records(df)
+
+    if not records:
+        print("\n✗ No mappable records found. Check column names match expected format.")
+        sys.exit(0)
+
+    if len(records) > SAFE_MAX:
+        print(f"\n✗ SAFE_MAX guard: {len(records):,} records > {SAFE_MAX} limit.")
+        print("  Raise SAFE_MAX in this pipeline if the count is expected.")
+        sys.exit(1)
+
+    print(f"\nInserting into Supabase...")
+    inserted, skipped, errors = slug_dedup_and_insert(supabase, records)
+
+    print("\n" + "=" * 60)
+    print("RESULTS")
+    print("=" * 60)
+    print(f"  Rows in file         : {len(df):,}")
+    print(f"  Mappable records     : {len(records):,}")
+    print(f"  Already in DB        : {skipped:,}")
+    print(f"  Inserted             : {inserted:,}")
+    print(f"  Errors               : {errors}")
+
+    if inserted == 0 and errors > 0:
+        sys.exit(1)
+
+# ── Mode: probe for online data ───────────────────────────────────────────────
+
+def run_probe_mode() -> None:
+    print(f"Mode      : PROBE MODE (no local file found)")
+    print("\nChecking NJ Open Data portal and NJDEP website for published data...\n")
+
+    supabase: Client = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
+
+    # Check known Socrata dataset IDs first
+    if SOCRATA_CANDIDATES:
+        print(f"Probing {len(SOCRATA_CANDIDATES)} confirmed Socrata dataset ID(s)...")
+        for ds_id, hint in SOCRATA_CANDIDATES:
+            url = f"https://data.nj.gov/resource/{ds_id}.json?$limit=5"
+            print(f"\n── Socrata: {ds_id} ({hint})")
+            try:
+                r = requests.get(url, timeout=15)
+                print(f"   Status: {r.status_code}")
+                if r.status_code == 200:
+                    rows = r.json()
+                    if rows:
+                        print(f"   ✓ Live — {len(rows)} sample rows. Columns: {list(rows[0].keys())}")
+                        # TODO: implement full fetch + insert when a confirmed dataset exists
+            except Exception as e:
+                print(f"   Error: {e}")
+    else:
+        print("No confirmed Socrata dataset IDs on record.")
+
+    # Probe all known HTML/API URLs
+    print(f"\nProbing {len(HTML_PROBE_URLS)} known NJ DEP URL(s)...\n")
+    results = [probe_url(label, url) for label, url in HTML_PROBE_URLS]
+
+    print("\n" + "=" * 60)
+    print("DIAGNOSTIC SUMMARY")
+    print("=" * 60)
+    usable = [r for r in results if r.get("status") == 200 and r.get("size", 0) > 500]
+    print(f"\nURLs probed    : {len(results)}")
+    print(f"Live (HTTP 200): {len(usable)}")
+
+    print("""
+✗ No machine-readable NJ A-901 data found at any probed URL.
+
+CURRENT STATUS (confirmed 2026-03):
+  • NJDEP dep.nj.gov is behind Imperva/Incapsula WAF — all automated
+    requests are blocked even with full browser headers
+  • data.nj.gov has ZERO NJ-specific A-901 or waste hauler datasets
+  • The legacy license list URL (nj.gov/dep/dshw/hwr/liclist.htm) is a 404
+
+TO OBTAIN THE DATA:
+  Option A — OPRA Request (recommended):
+    https://www.nj.gov/dep/opra/
+    dep.dshw@dep.nj.gov  |  (609) 984-6985
+    Request: "Current A-901 licensed solid waste transporters in Excel format"
+
+  Option B — Manual browser export:
+    Visit https://www.nj.gov/dep/enforcement/wastedecals/swt2.html
+    Open DevTools → Network tab → find the API call when the list loads.
+
+  Once data is obtained, run:
+    python pipelines/nj-dep-import/index.py path/to/file.xlsx
+""")
+    print("Pipeline exiting — 0 records inserted.")
+    sys.exit(0)
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
@@ -352,183 +407,16 @@ def main():
     print("NJ DEP A-901 Solid Waste Transporter Import Pipeline")
     print(f"Run date: {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}")
     print("=" * 60)
+    print()
 
-    supabase: Client = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
-
-    # ── Step 1: Probe confirmed Socrata dataset IDs ────────────────────────────
-    if SOCRATA_CANDIDATES:
-        print(f"\nStep 1: Probing {len(SOCRATA_CANDIDATES)} known Socrata dataset ID(s)...\n")
-        for ds_id, hint in SOCRATA_CANDIDATES:
-            print(f"  Probing: {ds_id} ({hint})")
-            result = probe_socrata(ds_id)
-            if result and result.get("rows"):
-                print(f"  ✓ Live dataset found — fetching full data...")
-                # Full paginated fetch
-                all_rows = []
-                limit = 50000
-                offset = 0
-                while True:
-                    url = (
-                        f"https://data.nj.gov/resource/{ds_id}.json"
-                        f"?$limit={limit}&$offset={offset}"
-                    )
-                    r = requests.get(url, timeout=60)
-                    chunk = r.json()
-                    if not chunk:
-                        break
-                    all_rows.extend(chunk)
-                    if len(chunk) < limit:
-                        break
-                    offset += limit
-
-                print(f"  Total rows fetched: {len(all_rows):,}")
-                if len(all_rows) > SAFE_MAX:
-                    print(f"  ✗ SAFE_MAX exceeded: {len(all_rows):,} > {SAFE_MAX}")
-                    sys.exit(1)
-
-                records = map_records(all_rows)
-                print(f"  Mapped records: {len(records):,}")
-                inserted, skipped, errors = slug_dedup_and_insert(supabase, records)
-
-                print("\n" + "=" * 60)
-                print("RESULTS")
-                print("=" * 60)
-                print(f"  Raw rows         : {len(all_rows):,}")
-                print(f"  Mapped records   : {len(records):,}")
-                print(f"  Already in DB    : {skipped:,}")
-                print(f"  Inserted         : {inserted:,}")
-                print(f"  Errors           : {errors}")
-                if inserted == 0 and errors > 0:
-                    sys.exit(1)
-                return
+    # Determine file path: command-line arg → default path → probe mode
+    if len(sys.argv) > 1:
+        file_path = sys.argv[1]
+        run_file_import(file_path)
+    elif os.path.exists(DEFAULT_FILE_PATH):
+        run_file_import(DEFAULT_FILE_PATH)
     else:
-        print("\nStep 1: No confirmed Socrata dataset IDs on record.")
-
-    # ── Step 2: Try direct file download URLs ─────────────────────────────────
-    if FILE_CANDIDATES:
-        print(f"\nStep 2: Trying {len(FILE_CANDIDATES)} direct file download URL(s)...\n")
-        for label, url in FILE_CANDIDATES:
-            r = probe_url(label, url)
-            if r["status"] == 200 and r.get("content") and len(r["content"]) > 500:
-                ct = r.get("content_type", "")
-                if "html" not in ct.lower():
-                    print(f"\n  ✓ Usable file found: {label}")
-                    raw_rows = parse_excel_or_csv(r["content"], ct)
-                    if raw_rows:
-                        records = map_records(raw_rows)
-                        if not records:
-                            print("  ✗ No mappable records after column matching")
-                        else:
-                            if len(records) > SAFE_MAX:
-                                print(f"  ✗ SAFE_MAX exceeded: {len(records):,} > {SAFE_MAX}")
-                                sys.exit(1)
-                            inserted, skipped, errors = slug_dedup_and_insert(
-                                supabase, records
-                            )
-                            print(f"\n  Inserted={inserted}  Skipped={skipped}  Errors={errors}")
-                            if inserted == 0 and errors > 0:
-                                sys.exit(1)
-                            return
-    else:
-        print("\nStep 2: No direct file download URLs configured.")
-
-    # ── Step 3: Probe HTML pages for new download links ───────────────────────
-    print("\nStep 3: Probing NJ DEP and NJ Open Data pages...\n")
-    all_probe_results = []
-    discovered_links = []
-
-    for label, url in HTML_PROBE_URLS:
-        result = probe_url(label, url)
-        all_probe_results.append(result)
-        discovered_links.extend(result.get("download_links", []))
-        # Check if an NJ-domain dataset appeared in a catalog result
-        for ds in result.get("json_datasets", []):
-            if "nj.gov" in ds.get("domain", "").lower() or "nj" in ds.get("domain", "").lower():
-                print(f"\n  ✓ NJ dataset found in catalog: {ds['name']} (id={ds['id']})")
-                print(f"    Add '{ds['id']}' to SOCRATA_CANDIDATES and rerun.")
-
-    # Try any discovered download links
-    if discovered_links:
-        print(f"\n  Attempting {len(discovered_links)} discovered download link(s)...")
-        for link in discovered_links[:5]:
-            if not link.startswith("http"):
-                link = "https://www.nj.gov" + link
-            r = probe_url(f"Discovered link", link)
-            if r["status"] == 200 and r.get("content") and len(r["content"]) > 500:
-                ct = r.get("content_type", "")
-                if "html" not in ct.lower():
-                    raw_rows = parse_excel_or_csv(r["content"], ct)
-                    if raw_rows:
-                        records = map_records(raw_rows)
-                        if records:
-                            if len(records) > SAFE_MAX:
-                                print(
-                                    f"  ✗ SAFE_MAX exceeded: {len(records):,} > {SAFE_MAX}"
-                                )
-                                sys.exit(1)
-                            inserted, skipped, errors = slug_dedup_and_insert(
-                                supabase, records
-                            )
-                            print(
-                                f"\n  Inserted={inserted}  Skipped={skipped}  Errors={errors}"
-                            )
-                            if inserted == 0 and errors > 0:
-                                sys.exit(1)
-                            return
-
-    # ── Step 4: No data found — print full diagnostic ─────────────────────────
-    print("\n" + "=" * 60)
-    print("DIAGNOSTIC SUMMARY")
-    print("=" * 60)
-
-    usable = [r for r in all_probe_results if r["status"] == 200 and r["size"] > 500]
-    print(f"\nURLs probed     : {len(all_probe_results)}")
-    print(f"HTTP 200 (live) : {len(usable)}")
-    print(f"Download links  : {len(discovered_links)}")
-
-    print("""
-✗ No machine-readable NJ A-901 data found at any probed URL.
-
-CURRENT STATUS (confirmed as of 2026-03):
-  • NJDEP wastedecals portal (dep.nj.gov) is behind Imperva/Incapsula WAF
-    and returns error pages to all automated requests — even with full
-    browser headers. Human browser access required.
-  • NJ Open Data Portal (data.nj.gov) has ZERO published datasets for
-    A-901 transporters, solid waste haulers, or any related NJ permits.
-    Catalog searches for "a901", "solid waste transporter", "waste hauler"
-    all return 0 NJ-domain results.
-  • The legacy URL nj.gov/dep/dshw/hwr/liclist.htm returns 404 (dead link).
-
-TO OBTAIN NJ A-901 DATA — RECOMMENDED NEXT STEPS:
-
-  Option A — OPRA Request (most reliable path):
-    File an Open Public Records Act request with NJDEP requesting a
-    complete list of current A-901 licensed solid waste transporters
-    (company name, address, registration number) in Excel or CSV format.
-
-    Online OPRA portal : https://www.nj.gov/dep/opra/
-    Direct email       : dep.dshw@dep.nj.gov
-    Phone              : (609) 984-6985 (Bureau of Solid Waste Planning)
-    Response deadline  : 7 business days under NJ law
-
-  Option B — Manual browser inspection of wastedecals portal:
-    Visit https://www.nj.gov/dep/enforcement/wastedecals/swt2.html
-    in a real browser. Open DevTools → Network tab → look for XHR/fetch
-    calls to a backend API when the transporter list loads. Copy that
-    API URL into FILE_CANDIDATES in this pipeline.
-
-  Option C — Monitor NJ Open Data Portal:
-    NJ sometimes publishes new datasets after public requests.
-    Watch: https://data.nj.gov/browse?q=solid+waste+transporter
-    If a dataset appears, copy its 4x4 ID into SOCRATA_CANDIDATES above.
-
-  Once data is obtained:
-    • Add Socrata dataset IDs to SOCRATA_CANDIDATES, OR
-    • Add direct file URL to FILE_CANDIDATES
-    The pipeline will automatically parse and insert on next run.
-""")
-    print("Pipeline exiting — 0 records inserted (no data source available).")
-    sys.exit(0)
+        run_probe_mode()
 
 
 if __name__ == "__main__":

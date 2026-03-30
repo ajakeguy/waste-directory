@@ -8,6 +8,7 @@ import { SERVICE_TYPE_LABELS, SERVICE_TYPES } from "@/types";
 const STATE_OPTIONS = [
   { label: "All States", value: "" },
   { label: "Massachusetts", value: "MA" },
+  { label: "New Jersey", value: "NJ" },
   { label: "New York", value: "NY" },
   { label: "Pennsylvania", value: "PA" },
   { label: "Vermont", value: "VT" },

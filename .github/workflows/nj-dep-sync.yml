@@ -1,5 +1,17 @@
 name: NJ DEP A-901 Sync
 
+# This pipeline operates in two modes:
+#
+# LOCAL FILE MODE: Run manually after obtaining the Excel export from NJDEP.
+#   python pipelines/nj-dep-import/index.py path/to/A-901_Licensed_Companies.xlsx
+#   Or place the file at: pipelines/nj-dep-import/data/nj_a901_haulers.xlsx
+#
+# PROBE MODE (this workflow): Runs monthly to check whether NJ has published
+#   machine-readable data on data.nj.gov or the NJDEP wastedecals portal.
+#   If no file is found or published, the pipeline exits cleanly with
+#   diagnostic output and next steps. No records are inserted in this mode
+#   until a data source becomes available.
+
 on:
   # Run on the 7th of each month at 3am UTC
   schedule:
@@ -23,9 +35,13 @@ jobs:
           python-version: "3.11"
 
       - name: Install Python dependencies
-        run: pip install requests pandas beautifulsoup4 pdfplumber supabase
+        run: pip install requests pandas openpyxl beautifulsoup4 pdfplumber supabase
 
       - name: Run NJ DEP A-901 importer
+        # No file argument → runs in probe mode, exits cleanly if no data found.
+        # To run in local file mode, trigger workflow_dispatch and pass the file
+        # via a prior upload step, or run locally:
+        #   python pipelines/nj-dep-import/index.py path/to/file.xlsx
         run: python pipelines/nj-dep-import/index.py
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
