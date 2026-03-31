@@ -272,6 +272,29 @@ def main() -> None:
             else None
         )
 
+        # Detect NYC borough from city field
+        boro = None
+        city_upper = city.upper() if city else ""
+        if city_upper in ("BRONX", "THE BRONX"):
+            boro = "Bronx"
+        elif city_upper in ("BROOKLYN",):
+            boro = "Brooklyn"
+        elif city_upper in ("MANHATTAN", "NEW YORK", "NEW YORK CITY"):
+            boro = "Manhattan"
+        elif city_upper in ("QUEENS",):
+            boro = "Queens"
+        elif city_upper in ("STATEN ISLAND",):
+            boro = "Staten Island"
+
+        # Build license_metadata with BIC-specific fields
+        license_metadata: dict[str, str] = {
+            "bic_number": record["bic_number"],
+        }
+        if boro:
+            license_metadata["boro"] = boro
+        if record["expiration_date"]:
+            license_metadata["renewal"] = record["expiration_date"]
+
         to_insert.append({
             "name":               account_name,
             "slug":               slug,
@@ -285,6 +308,7 @@ def main() -> None:
             "hq_state":           record["state"],
             "license_number":     record["bic_number"],
             "license_expiry":     record["expiration_date"],
+            "license_metadata":   license_metadata,
             "service_types":      ["commercial"],
             "service_area_states": ["NY"],
             "verified":           True,
@@ -302,11 +326,33 @@ def main() -> None:
     update_errors = 0
     for existing, record in to_update:
         current_states = existing.get("service_area_states") or []
+
+        # Detect boro for the matched record too
+        city_upper = (record.get("city") or "").upper()
+        boro = None
+        if city_upper in ("BRONX", "THE BRONX"):
+            boro = "Bronx"
+        elif city_upper in ("BROOKLYN",):
+            boro = "Brooklyn"
+        elif city_upper in ("MANHATTAN", "NEW YORK", "NEW YORK CITY"):
+            boro = "Manhattan"
+        elif city_upper in ("QUEENS",):
+            boro = "Queens"
+        elif city_upper in ("STATEN ISLAND",):
+            boro = "Staten Island"
+
+        license_metadata: dict[str, str] = {"bic_number": record["bic_number"]}
+        if boro:
+            license_metadata["boro"] = boro
+        if record["expiration_date"]:
+            license_metadata["renewal"] = record["expiration_date"]
+
         try:
             supabase.table("organizations").update({
                 "service_area_states": list(current_states) + ["NY"],
                 "license_number":      record["bic_number"],
                 "license_expiry":      record["expiration_date"],
+                "license_metadata":    license_metadata,
             }).eq("id", existing["id"]).execute()
             print(f"  ✓ Updated {existing['slug']} — added NY to service_area_states")
         except Exception as exc:
