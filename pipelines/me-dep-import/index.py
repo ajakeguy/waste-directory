@@ -3,23 +3,26 @@
 pipelines/me-dep-import/index.py
 
 Imports Maine DEP non-hazardous waste transporters from the Maine DEP
-data portal. Scans the data page for transporter-related links, then
-tries known direct PDF URLs. Parses fixed-width text layout (not tables).
+data portal. The PDF uses a fixed-width text layout (not tables).
+
+PDF source (confirmed):
+    https://www.maine.gov/dep/ftp/reports/nactive.pdf
 
 Required env vars:
     SUPABASE_URL
     SUPABASE_SERVICE_ROLE_KEY
 """
 
+import io
 import os
 import re
-import io
 import sys
 from datetime import datetime
 
+import pandas as pd
+import pdfplumber
 import requests
 from bs4 import BeautifulSoup
-import pdfplumber
 from supabase import create_client, Client
 
 # ── Constants ─────────────────────────────────────────────────────────────────
@@ -31,7 +34,7 @@ BATCH_SIZE = 50
 
 DATA_PAGE_URL = "https://www.maine.gov/dep/maps-data/data.html"
 
-# Confirmed working URL first (resolved from relative path ../ftp/reports/nactive.pdf)
+# Confirmed working URL listed first
 DIRECT_URLS = [
     "https://www.maine.gov/dep/ftp/reports/nactive.pdf",
     "https://www.maine.gov/dep/waste/transpinstall/nonhaztransporterlist.pdf",
@@ -43,6 +46,19 @@ DIRECT_URLS = [
 HEADERS = {"User-Agent": "WasteDirectory-DataImport/1.0 (contact@wastedirectory.com)"}
 
 LINK_KEYWORDS = re.compile(r"transporter|non-haz|nonhaz|hauler", re.IGNORECASE)
+
+# Words that indicate a line is the header row
+HEADER_WORDS = re.compile(
+    r"\b(license|permit|company|facility|name|address|city|state|zip|phone)\b",
+    re.IGNORECASE,
+)
+
+# Lines to unconditionally skip
+SKIP_PATTERNS = re.compile(
+    r"maine\.gov|page \d|printed|report date|non-haz|active transporter|"
+    r"department of environmental|^\s*-+\s*$",
+    re.IGNORECASE,
+)
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -71,7 +87,29 @@ def clean_phone(raw: str) -> str | None:
     return trimmed if trimmed else None
 
 
-# ── Step 1: Scan data page for transporter links ───────────────────────────────
+def detect_column_offsets(header_line: str) -> list[int]:
+    """Return the character position where each column header token starts."""
+    offsets: list[int] = []
+    in_word = False
+    for i, ch in enumerate(header_line):
+        if ch != " " and not in_word:
+            offsets.append(i)
+            in_word = True
+        elif ch == " ":
+            in_word = False
+    return offsets
+
+
+def split_fixed_width(line: str, offsets: list[int]) -> list[str]:
+    """Slice a line into fields at the given character offsets."""
+    fields = []
+    for i, start in enumerate(offsets):
+        end = offsets[i + 1] if i + 1 < len(offsets) else len(line)
+        fields.append(line[start:end].strip())
+    return fields
+
+
+# ── Step 1: Scan data page ─────────────────────────────────────────────────────
 
 def scan_data_page() -> list[str]:
     """Fetch the ME DEP data page and return all transporter-related links."""
@@ -101,10 +139,9 @@ def scan_data_page() -> list[str]:
     return found
 
 
-# ── Step 2: Try direct URLs ────────────────────────────────────────────────────
+# ── Step 2: Download PDF ───────────────────────────────────────────────────────
 
 def fetch_pdf(url: str) -> bytes | None:
-    """Attempt to download a PDF from the given URL. Returns bytes or None."""
     try:
         resp = requests.get(url, headers=HEADERS, timeout=60)
         if resp.status_code == 200 and len(resp.content) > 1000:
@@ -122,8 +159,7 @@ def fetch_pdf(url: str) -> bytes | None:
 
 
 def find_pdf(extra_urls: list[str]) -> tuple[str, bytes] | tuple[None, None]:
-    """Try DIRECT_URLS first (confirmed URL is first), then extra_urls from page scan."""
-    candidates = list(dict.fromkeys(DIRECT_URLS + extra_urls))  # dedup, direct URLs first
+    candidates = list(dict.fromkeys(DIRECT_URLS + extra_urls))
     for url in candidates:
         data = fetch_pdf(url)
         if data:
@@ -131,142 +167,172 @@ def find_pdf(extra_urls: list[str]) -> tuple[str, bytes] | tuple[None, None]:
     return None, None
 
 
-# ── Step 3: Parse fixed-width text PDF ────────────────────────────────────────
+# ── Step 3: Extract text and diagnose ─────────────────────────────────────────
 
-def detect_column_offsets(header_line: str) -> list[int]:
+def extract_all_text(pdf_bytes: bytes) -> tuple[list[str], str]:
     """
-    Detect column start positions from a header line.
-    Finds where each word/token begins (after leading whitespace).
-    """
-    offsets = []
-    in_word = False
-    for i, ch in enumerate(header_line):
-        if ch != " " and not in_word:
-            offsets.append(i)
-            in_word = True
-        elif ch == " ":
-            in_word = False
-    return offsets
-
-
-def split_fixed_width(line: str, offsets: list[int]) -> list[str]:
-    """Split a line into fields at the given column offsets."""
-    fields = []
-    for i, start in enumerate(offsets):
-        end = offsets[i + 1] if i + 1 < len(offsets) else len(line)
-        fields.append(line[start:end].strip())
-    return fields
-
-
-def parse_pdf(pdf_bytes: bytes) -> tuple[list[list[str]], list[str] | None]:
-    """
-    Parse ME DEP non-haz transporter PDF using fixed-width text extraction.
-
-    The PDF uses fixed-width columns, not HTML-style tables.
-    Strategy:
-      1. Extract raw text from each page
-      2. Split by newlines
-      3. Skip header/blank/footer lines
-      4. Split each data line on 2+ consecutive spaces (fixed-width delimiter)
-      5. Fallback: use detected column offsets from header row
-
-    Prints first 5 raw lines and detected columns as diagnostic.
+    Extract text from all pages using layout=True to preserve fixed-width spacing.
+    Returns (all_lines, page1_full_text).
     """
     all_lines: list[str] = []
-    col_names: list[str] | None = None
-    col_offsets: list[int] | None = None
-
-    SKIP_PATTERNS = re.compile(
-        r"maine\.gov|page \d|printed|report date|non-haz|active transporter|"
-        r"^\s*$|^-+$|department of environmental",
-        re.IGNORECASE,
-    )
-    HEADER_PATTERNS = re.compile(
-        r"license|permit|company|facility|name|address|city|state|zip|phone",
-        re.IGNORECASE,
-    )
+    page1_text: str = ""
 
     with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
         print(f"\n  PDF pages: {len(pdf.pages)}")
 
         for page_num, page in enumerate(pdf.pages, start=1):
-            text = page.extract_text()
+            # layout=True preserves horizontal spacing for fixed-width text
+            try:
+                text = page.extract_text(layout=True)
+            except TypeError:
+                # Older pdfplumber versions don't support layout= kwarg
+                text = page.extract_text()
+
             if not text:
                 print(f"  Page {page_num}: no text extracted")
                 continue
 
-            lines = text.split("\n")
-            for line in lines:
-                stripped = line.rstrip()
-                if not stripped.strip():
-                    continue
-                if SKIP_PATTERNS.search(stripped.strip()):
-                    continue
+            if page_num == 1:
+                page1_text = text
 
-                # Detect header row
-                if col_names is None and HEADER_PATTERNS.search(stripped):
-                    # Split header on 2+ spaces to get column names
-                    parts = re.split(r"  +", stripped.strip())
-                    if len(parts) >= 2:
-                        col_names = [p.strip() for p in parts if p.strip()]
-                        col_offsets = detect_column_offsets(stripped)
-                        print(f"\n  Header line: {repr(stripped)}")
-                        print(f"  Column names detected: {col_names}")
-                        print(f"  Column offsets: {col_offsets}")
-                        continue
+            for line in text.split("\n"):
+                all_lines.append(line.rstrip())
 
-                all_lines.append(stripped)
+    return all_lines, page1_text
 
-    # ── Diagnostic: print first 5 raw lines ──────────────────────────────────
-    print(f"\n--- DIAGNOSTIC ---")
-    print(f"  Total lines collected: {len(all_lines)}")
-    print(f"  First 5 raw lines:")
-    for i, line in enumerate(all_lines[:5]):
-        print(f"    [{i}] {repr(line)}")
 
-    if col_names:
-        print(f"\n  Attempting split on 2+ spaces (first 3 lines):")
-        for line in all_lines[:3]:
-            parts = re.split(r"  +", line.strip())
-            print(f"    {parts}")
+# ── Step 4: Parse fixed-width lines ───────────────────────────────────────────
 
-    print(f"--- END DIAGNOSTIC ---\n")
+def parse_lines(
+    all_lines: list[str],
+) -> tuple[list[list[str]], list[str] | None, list[int] | None]:
+    """
+    Three-strategy parser for fixed-width text:
+      A) Split on 2+ consecutive spaces
+      B) pandas read_fwf() with auto-detected widths
+      C) Positional slice at detected column offsets
 
-    # ── Parse data lines into field lists ────────────────────────────────────
-    records: list[list[str]] = []
+    Returns (records, col_names, col_offsets).
+    """
+    col_names: list[str] | None = None
+    col_offsets: list[int] | None = None
+    header_line: str = ""
+    data_lines: list[str] = []
+
+    # ── Pass 1: separate header from data lines ───────────────────────────────
     for line in all_lines:
         if not line.strip():
             continue
-
-        # Primary: split on 2+ spaces
-        parts = re.split(r"  +", line.strip())
-        parts = [p.strip() for p in parts if p.strip()]
-
-        if len(parts) >= 2:
-            records.append(parts)
+        if SKIP_PATTERNS.search(line.strip()):
             continue
 
-        # Fallback: use detected column offsets if available
-        if col_offsets and len(col_offsets) >= 2:
+        if col_names is None and HEADER_WORDS.search(line):
+            # Looks like the header row
+            header_line = line
+            parts = re.split(r"  +", line.strip())
+            parts = [p.strip() for p in parts if p.strip()]
+            if len(parts) >= 2:
+                col_names = parts
+                col_offsets = detect_column_offsets(line)
+                print(f"\n  Header line : {repr(line)}")
+                print(f"  Col names   : {col_names}")
+                print(f"  Col offsets : {col_offsets}")
+            continue
+
+        data_lines.append(line)
+
+    # ── Diagnostic: first 10 data lines with line numbers ─────────────────────
+    print(f"\n--- DIAGNOSTIC ---")
+    print(f"  Total data lines after header filter: {len(data_lines)}")
+    print(f"  First 10 raw lines (with line numbers):")
+    for i, line in enumerate(data_lines[:10]):
+        print(f"    [{i:02d}] {repr(line)}")
+    print(f"--- END DIAGNOSTIC ---\n")
+
+    # ── Strategy A: split on 2+ spaces ────────────────────────────────────────
+    records_a: list[list[str]] = []
+    for line in data_lines:
+        parts = re.split(r"  +", line.strip())
+        parts = [p.strip() for p in parts if p.strip()]
+        if len(parts) >= 2:
+            records_a.append(parts)
+
+    if records_a:
+        print(f"  Strategy A (2-space split): {len(records_a)} rows parsed")
+        print(f"  Strategy A first 3 rows:")
+        for row in records_a[:3]:
+            print(f"    {row}")
+        return records_a, col_names, col_offsets
+
+    print(f"  Strategy A yielded 0 rows — trying Strategy B (pandas read_fwf)")
+
+    # ── Strategy B: pandas read_fwf auto-detect ───────────────────────────────
+    try:
+        text_block = "\n".join(data_lines)
+        df = pd.read_fwf(
+            io.StringIO(text_block),
+            header=None,
+            dtype=str,
+        )
+        df = df.dropna(how="all")
+        records_b = [
+            [str(v).strip() for v in row if str(v).strip() and str(v) != "nan"]
+            for _, row in df.iterrows()
+        ]
+        records_b = [r for r in records_b if len(r) >= 1]
+        if records_b:
+            print(f"  Strategy B (pandas fwf): {len(records_b)} rows parsed")
+            print(f"  Strategy B first 3 rows:")
+            for row in records_b[:3]:
+                print(f"    {row}")
+            return records_b, col_names, col_offsets
+    except Exception as exc:
+        print(f"  Strategy B failed: {exc}")
+
+    print(f"  Strategy B yielded 0 rows — trying Strategy C (column offsets)")
+
+    # ── Strategy C: slice at detected column offsets ──────────────────────────
+    records_c: list[list[str]] = []
+    if col_offsets and len(col_offsets) >= 2:
+        for line in data_lines:
             fields = split_fixed_width(line, col_offsets)
             fields = [f.strip() for f in fields if f.strip()]
-            if len(fields) >= 2:
-                records.append(fields)
+            if len(fields) >= 1:
+                records_c.append(fields)
+        if records_c:
+            print(f"  Strategy C (col offsets): {len(records_c)} rows parsed")
+            print(f"  Strategy C first 3 rows:")
+            for row in records_c[:3]:
+                print(f"    {row}")
+            return records_c, col_names, col_offsets
 
-    return records, col_names
+    # ── Last resort: import name-only from any non-blank line ─────────────────
+    print(f"  All strategies yielded 0 usable rows.")
+    print(f"  Falling back to name-only import from non-blank lines.")
+    records_fallback: list[list[str]] = []
+    for line in data_lines:
+        stripped = line.strip()
+        if stripped and len(stripped) >= 3:
+            records_fallback.append([stripped])
+    print(f"  Name-only fallback: {len(records_fallback)} lines")
+    return records_fallback, col_names, col_offsets
 
 
-def map_records(raw_rows: list[list[str]], col_names: list[str] | None) -> list[dict]:
+# ── Step 5: Map parsed rows to schema ─────────────────────────────────────────
+
+def map_records(
+    raw_rows: list[list[str]],
+    col_names: list[str] | None,
+) -> list[dict]:
     """
-    Map raw parsed rows to organization schema.
-    Uses column names for field lookup when available, else positional.
+    Map parsed rows to the organization schema.
+    Uses column-name lookup when headers were detected, else positional.
 
-    Expected ME DEP fixed-width layout (typical):
-        License#  Company Name  Address  City  State  Zip  Phone
+    Expected ME DEP column order (typical):
+        License#  Company/Name  Address  City  ST  Zip  Phone
     """
     mapped = []
 
-    # Build column index map (case-insensitive partial match)
     col_idx: dict[str, int] = {}
     if col_names:
         for i, name in enumerate(col_names):
@@ -281,33 +347,42 @@ def map_records(raw_rows: list[list[str]], col_names: list[str] | None) -> list[
         return ""
 
     for row in raw_rows:
-        if not row or len(row) < 2:
+        if not row:
             continue
 
-        if col_names:
+        if col_names and len(row) >= 2:
             license_num = get(row, "license", "permit", "cert", "number", "id")
-            name = get(row, "company", "facility", "name", "business")
-            address = get(row, "address", "addr", "street")
-            city = get(row, "city", "town")
-            state = get(row, "state", "st") or "ME"
-            zip_code = get(row, "zip", "postal")
-            phone = get(row, "phone", "tel")
+            name        = get(row, "company", "facility", "name", "business")
+            address     = get(row, "address", "addr", "street")
+            city        = get(row, "city", "town")
+            state       = get(row, "state", "st") or "ME"
+            zip_code    = get(row, "zip", "postal")
+            phone       = get(row, "phone", "tel")
+        elif len(row) >= 2:
+            # Positional: License#  Name  Address  City  ST  Zip  Phone
+            license_num = row[0]
+            name        = row[1]
+            address     = row[2] if len(row) > 2 else ""
+            city        = row[3] if len(row) > 3 else ""
+            state       = row[4] if len(row) > 4 else "ME"
+            zip_code    = row[5] if len(row) > 5 else ""
+            phone       = row[6] if len(row) > 6 else ""
         else:
-            # Positional fallback: License# Company Address City State Zip Phone
-            license_num = row[0] if len(row) > 0 else ""
-            name = row[1] if len(row) > 1 else ""
-            address = row[2] if len(row) > 2 else ""
-            city = row[3] if len(row) > 3 else ""
-            state = row[4] if len(row) > 4 else "ME"
-            zip_code = row[5] if len(row) > 5 else ""
-            phone = row[6] if len(row) > 6 else ""
+            # Name-only fallback (Strategy C last resort)
+            license_num = ""
+            name        = row[0]
+            address     = ""
+            city        = ""
+            state       = "ME"
+            zip_code    = ""
+            phone       = ""
 
         name = name.strip()
-        if not name:
+        if not name or len(name) < 2:
             continue
 
-        # Skip rows that look like continued text or junk
-        if len(name) < 2 or re.match(r"^\d+$", name):
+        # Skip lines that are obviously not company names
+        if re.match(r"^\d+$", name):
             continue
 
         mapped.append({
@@ -329,7 +404,7 @@ def main() -> None:
     print("=== WasteDirectory — Maine DEP Non-Haz Transporter Importer ===")
     print(datetime.utcnow().isoformat())
 
-    # ── 1. Scan data page (supplementary — confirmed URL is in DIRECT_URLS) ──
+    # ── 1. Scan data page (supplementary) ─────────────────────────────────────
     extra_urls = scan_data_page()
 
     # ── 2. Find and download PDF ──────────────────────────────────────────────
@@ -349,27 +424,37 @@ def main() -> None:
 
     print(f"\nUsing PDF from: {pdf_url}")
 
-    # ── 3. Parse PDF (fixed-width text) ───────────────────────────────────────
+    # ── 3. Extract text (layout=True preserves fixed-width spacing) ───────────
     try:
-        raw_rows, col_names = parse_pdf(pdf_bytes)
+        all_lines, page1_text = extract_all_text(pdf_bytes)
     except Exception as exc:
-        print(f"\nFailed to parse PDF: {exc}", file=sys.stderr)
+        print(f"\nFailed to extract text from PDF: {exc}", file=sys.stderr)
         sys.exit(1)
 
-    print(f"  Total data rows parsed: {len(raw_rows)}")
+    # Always print full page 1 raw text so we can see the exact format
+    print(f"\n{'='*60}")
+    print(f"FULL PAGE 1 RAW TEXT ({len(page1_text)} chars):")
+    print(f"{'='*60}")
+    print(page1_text)
+    print(f"{'='*60}\n")
 
+    # ── 4. Parse fixed-width lines ────────────────────────────────────────────
+    raw_rows, col_names, col_offsets = parse_lines(all_lines)
+    print(f"\n  Total rows after parsing: {len(raw_rows)}")
+
+    # ── 5. Map to schema ──────────────────────────────────────────────────────
     mapped = map_records(raw_rows, col_names)
     print(f"  Records mapped to schema: {len(mapped)}")
 
     if not mapped:
-        print("\nNo records mapped — check the diagnostic output above for the actual line format.")
+        print("\nNo records mapped — review the PAGE 1 RAW TEXT and DIAGNOSTIC output above.")
         sys.exit(0)
 
     if len(mapped) > SAFE_MAX:
         print(f"\nSAFE_MAX exceeded ({len(mapped)} > {SAFE_MAX}). Aborting.")
         sys.exit(1)
 
-    # ── 4. Connect to Supabase ────────────────────────────────────────────────
+    # ── 6. Connect to Supabase ────────────────────────────────────────────────
     supabase_url = os.environ.get("SUPABASE_URL")
     service_role_key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
     if not supabase_url or not service_role_key:
@@ -381,7 +466,7 @@ def main() -> None:
 
     supabase: Client = create_client(supabase_url, service_role_key)
 
-    # ── 5. Load existing orgs for dedup ───────────────────────────────────────
+    # ── 7. Load existing orgs for dedup ───────────────────────────────────────
     print("\nLoading existing organizations for dedup...")
     existing_name_map: dict[str, dict] = {}
     existing_slug_set: set[str] = set()
@@ -407,7 +492,7 @@ def main() -> None:
 
     print(f"  Loaded {len(existing_name_map)} existing organizations")
 
-    # ── 6. Classify records ───────────────────────────────────────────────────
+    # ── 8. Classify records ───────────────────────────────────────────────────
     to_update: list[tuple[dict, dict]] = []
     already_existed: list[dict] = []
     to_insert: list[dict] = []
@@ -466,7 +551,7 @@ def main() -> None:
     if skipped_no_name:
         print(f"  Skipped (no name):               {skipped_no_name}")
 
-    # ── 7. Update existing orgs ───────────────────────────────────────────────
+    # ── 9. Update existing orgs ───────────────────────────────────────────────
     update_errors = 0
     for existing, record in to_update:
         current_states = existing.get("service_area_states") or []
@@ -479,7 +564,7 @@ def main() -> None:
             print(f"  ✗ Update failed for {existing['slug']}: {exc}")
             update_errors += 1
 
-    # ── 8. Insert new records ─────────────────────────────────────────────────
+    # ── 10. Insert new records ────────────────────────────────────────────────
     insert_errors = 0
     newly_inserted = 0
 
@@ -509,7 +594,7 @@ def main() -> None:
                 print(f"  ✗ Batch {batch_num} failed: {exc}")
                 insert_errors += 1
 
-    # ── 9. Summary ────────────────────────────────────────────────────────────
+    # ── 11. Summary ───────────────────────────────────────────────────────────
     total_errors = update_errors + insert_errors
     print("\n=== Summary ===")
     print(f"  Total lines parsed   : {len(raw_rows)}")

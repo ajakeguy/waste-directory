@@ -1,10 +1,10 @@
+# Disabled - CT has no statewide solid waste transporter list
+# CT DEEP only regulates hazardous waste; solid waste is permitted at the municipal level.
+# Re-enable if CT publishes a statewide list in the future.
 name: CT DEEP Hauler Sync
 
 on:
-  # Run on the 10th of each month at 3am UTC
-  schedule:
-    - cron: "0 3 10 * *"
-  # Allow manual runs from the GitHub Actions UI
+  # on: [workflow_dispatch]
   workflow_dispatch:
 
 jobs:

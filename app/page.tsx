@@ -5,12 +5,6 @@ import { ArticleCard } from "@/components/news/ArticleCard";
 
 const states = [
   {
-    name: "Connecticut",
-    slug: "connecticut",
-    abbr: "CT",
-    description: "Serving the Constitution State",
-  },
-  {
     name: "Maine",
     slug: "maine",
     abbr: "ME",
@@ -90,10 +84,10 @@ export default async function HomePage() {
             Browse by State
           </h2>
           <p className="text-gray-500 text-center mb-10">
-            Find licensed waste haulers serving Connecticut, Maine, Massachusetts, New Jersey, New York, Pennsylvania, and Vermont
+            Find licensed waste haulers serving Maine, Massachusetts, New Jersey, New York, Pennsylvania, and Vermont
           </p>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-6">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
             {states.map((state) => (
               <Link
                 key={state.slug}
