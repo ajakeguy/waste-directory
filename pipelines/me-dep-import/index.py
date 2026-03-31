@@ -53,6 +53,17 @@ HEADER_WORDS = re.compile(
     re.IGNORECASE,
 )
 
+# ME DEP waste category code → service_types mapping
+# A = Commercial/Industrial (roll-off / C&D, industrial)
+# B = Municipal Solid Waste (residential, commercial)
+# C = Septage (residential, septage)
+# If multiple categories, union all mapped types
+CATEGORY_SERVICE_MAP: dict[str, list[str]] = {
+    "A": ["roll_off", "industrial"],
+    "B": ["residential", "commercial"],
+    "C": ["residential", "septage"],
+}
+
 # Lines to unconditionally skip
 SKIP_PATTERNS = re.compile(
     r"maine\.gov|page \d|printed|report date|non-haz|active transporter|"
@@ -346,6 +357,21 @@ def map_records(
                         return row[idx]
         return ""
 
+    def parse_categories(raw: str) -> list[str]:
+        """Extract uppercase category codes (A, B, C) from a raw field value."""
+        return [c for c in re.findall(r"\b([A-C])\b", raw.upper())]
+
+    def categories_to_service_types(codes: list[str]) -> list[str]:
+        """Map ME waste category codes to service_types, deduplicating."""
+        result: list[str] = []
+        seen: set[str] = set()
+        for code in codes:
+            for stype in CATEGORY_SERVICE_MAP.get(code, []):
+                if stype not in seen:
+                    result.append(stype)
+                    seen.add(stype)
+        return result if result else ["residential", "commercial"]
+
     for row in raw_rows:
         if not row:
             continue
@@ -358,8 +384,9 @@ def map_records(
             state       = get(row, "state", "st") or "ME"
             zip_code    = get(row, "zip", "postal")
             phone       = get(row, "phone", "tel")
+            category    = get(row, "category", "type", "class", "cat")
         elif len(row) >= 2:
-            # Positional: License#  Name  Address  City  ST  Zip  Phone
+            # Positional: License#  Name  Address  City  ST  Zip  Phone  [Category]
             license_num = row[0]
             name        = row[1]
             address     = row[2] if len(row) > 2 else ""
@@ -367,6 +394,7 @@ def map_records(
             state       = row[4] if len(row) > 4 else "ME"
             zip_code    = row[5] if len(row) > 5 else ""
             phone       = row[6] if len(row) > 6 else ""
+            category    = row[7] if len(row) > 7 else ""
         else:
             # Name-only fallback (Strategy C last resort)
             license_num = ""
@@ -376,6 +404,7 @@ def map_records(
             state       = "ME"
             zip_code    = ""
             phone       = ""
+            category    = ""
 
         name = name.strip()
         if not name or len(name) < 2:
@@ -385,6 +414,15 @@ def map_records(
         if re.match(r"^\d+$", name):
             continue
 
+        # Parse waste category codes and map to service types
+        cat_codes = parse_categories(category)
+        service_types = categories_to_service_types(cat_codes)
+
+        # Build license_metadata with ME-specific fields
+        license_metadata: dict[str, str] = {}
+        if cat_codes:
+            license_metadata["me_waste_category"] = ",".join(sorted(cat_codes))
+
         mapped.append({
             "name": name,
             "address": address.strip() or None,
@@ -393,6 +431,8 @@ def map_records(
             "zip": zip_code.strip() or None,
             "phone": clean_phone(phone),
             "license_number": license_num.strip() or None,
+            "service_types": service_types,
+            "license_metadata": license_metadata,
         })
 
     return mapped
@@ -509,11 +549,8 @@ def main() -> None:
         existing = existing_name_map.get(name_key)
 
         if existing:
-            current_states = existing.get("service_area_states") or []
-            if "ME" not in current_states:
-                to_update.append((existing, record))
-            else:
-                already_existed.append(existing)
+            # Always update to refresh service_types and license_metadata
+            to_update.append((existing, record))
             continue
 
         base_slug = slugify(name, record.get("city") or "")
@@ -538,15 +575,15 @@ def main() -> None:
             "state": record["state"],
             "zip": record["zip"],
             "license_number": record["license_number"],
-            "service_types": ["commercial", "residential"],
+            "service_types": record["service_types"],
+            "license_metadata": record["license_metadata"],
             "service_area_states": SERVICE_AREA_STATES,
             "verified": True,
             "active": True,
             "data_source": DATA_SOURCE,
         })
 
-    print(f"\n  Name-matched (ME update needed): {len(to_update)}")
-    print(f"  Name-matched (already complete): {len(already_existed)}")
+    print(f"\n  Name-matched (will update):      {len(to_update)}")
     print(f"  New records to insert:           {len(to_insert)}")
     if skipped_no_name:
         print(f"  Skipped (no name):               {skipped_no_name}")
@@ -555,11 +592,15 @@ def main() -> None:
     update_errors = 0
     for existing, record in to_update:
         current_states = existing.get("service_area_states") or []
+        update_payload: dict = {
+            "service_types": record["service_types"],
+            "license_metadata": record["license_metadata"],
+        }
+        if "ME" not in current_states:
+            update_payload["service_area_states"] = list(current_states) + ["ME"]
         try:
-            supabase.table("organizations").update({
-                "service_area_states": list(current_states) + ["ME"],
-            }).eq("id", existing["id"]).execute()
-            print(f"  ✓ Updated {existing['slug']} — added ME to service_area_states")
+            supabase.table("organizations").update(update_payload).eq("id", existing["id"]).execute()
+            print(f"  ✓ Updated {existing['slug']} — service_types={record['service_types']}")
         except Exception as exc:
             print(f"  ✗ Update failed for {existing['slug']}: {exc}")
             update_errors += 1
@@ -599,8 +640,7 @@ def main() -> None:
     print("\n=== Summary ===")
     print(f"  Total lines parsed   : {len(raw_rows)}")
     print(f"  Mapped to schema     : {len(mapped)}")
-    print(f"  Name-matched         : {len(to_update) + len(already_existed)}")
-    print(f"  Already existed      : {len(already_existed)}")
+    print(f"  Name-matched/updated : {len(to_update)}")
     print(f"  Newly inserted       : {newly_inserted}")
     print(f"  Errors               : {total_errors}")
 
