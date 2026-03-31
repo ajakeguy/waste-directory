@@ -4,7 +4,7 @@ pipelines/me-dep-import/index.py
 
 Imports Maine DEP non-hazardous waste transporters from the Maine DEP
 data portal. Scans the data page for transporter-related links, then
-tries known direct PDF/Excel URLs.
+tries known direct PDF URLs. Parses fixed-width text layout (not tables).
 
 Required env vars:
     SUPABASE_URL
@@ -31,7 +31,9 @@ BATCH_SIZE = 50
 
 DATA_PAGE_URL = "https://www.maine.gov/dep/maps-data/data.html"
 
+# Confirmed working URL first (resolved from relative path ../ftp/reports/nactive.pdf)
 DIRECT_URLS = [
+    "https://www.maine.gov/dep/ftp/reports/nactive.pdf",
     "https://www.maine.gov/dep/waste/transpinstall/nonhaztransporterlist.pdf",
     "https://www11.maine.gov/dep/waste/transpinstall/nonhaztransporterlist.pdf",
     "https://www.maine.gov/dep/maps-data/downloads/nonhaz-transporters.pdf",
@@ -55,12 +57,6 @@ def normalize_name(name: str) -> str:
     name = name.lower()
     name = re.sub(r"[^a-z0-9 ]", "", name)
     return re.sub(r"\s+", " ", name).strip()
-
-
-def clean_cell(value) -> str:
-    if value is None:
-        return ""
-    return re.sub(r"\s+", " ", str(value)).strip()
 
 
 def clean_phone(raw: str) -> str | None:
@@ -89,7 +85,6 @@ def scan_data_page() -> list[str]:
             href = tag["href"]
             text = tag.get_text(" ", strip=True)
             if LINK_KEYWORDS.search(href) or LINK_KEYWORDS.search(text):
-                # Resolve relative URLs
                 if href.startswith("http"):
                     full_url = href
                 elif href.startswith("/"):
@@ -127,8 +122,8 @@ def fetch_pdf(url: str) -> bytes | None:
 
 
 def find_pdf(extra_urls: list[str]) -> tuple[str, bytes] | tuple[None, None]:
-    """Try extra_urls then DIRECT_URLS; return (url, bytes) for the first PDF found."""
-    candidates = list(dict.fromkeys(extra_urls + DIRECT_URLS))  # dedup, preserve order
+    """Try DIRECT_URLS first (confirmed URL is first), then extra_urls from page scan."""
+    candidates = list(dict.fromkeys(DIRECT_URLS + extra_urls))  # dedup, direct URLs first
     for url in candidates:
         data = fetch_pdf(url)
         if data:
@@ -136,79 +131,148 @@ def find_pdf(extra_urls: list[str]) -> tuple[str, bytes] | tuple[None, None]:
     return None, None
 
 
-# ── Step 3: Parse PDF ──────────────────────────────────────────────────────────
+# ── Step 3: Parse fixed-width text PDF ────────────────────────────────────────
 
-def parse_pdf(pdf_bytes: bytes) -> list[dict]:
+def detect_column_offsets(header_line: str) -> list[int]:
     """
-    Parse ME DEP non-haz transporter PDF.
-    Prints column names and first 3 rows as diagnostic.
-    Returns list of raw row dicts.
+    Detect column start positions from a header line.
+    Finds where each word/token begins (after leading whitespace).
     """
-    records = []
+    offsets = []
+    in_word = False
+    for i, ch in enumerate(header_line):
+        if ch != " " and not in_word:
+            offsets.append(i)
+            in_word = True
+        elif ch == " ":
+            in_word = False
+    return offsets
+
+
+def split_fixed_width(line: str, offsets: list[int]) -> list[str]:
+    """Split a line into fields at the given column offsets."""
+    fields = []
+    for i, start in enumerate(offsets):
+        end = offsets[i + 1] if i + 1 < len(offsets) else len(line)
+        fields.append(line[start:end].strip())
+    return fields
+
+
+def parse_pdf(pdf_bytes: bytes) -> tuple[list[list[str]], list[str] | None]:
+    """
+    Parse ME DEP non-haz transporter PDF using fixed-width text extraction.
+
+    The PDF uses fixed-width columns, not HTML-style tables.
+    Strategy:
+      1. Extract raw text from each page
+      2. Split by newlines
+      3. Skip header/blank/footer lines
+      4. Split each data line on 2+ consecutive spaces (fixed-width delimiter)
+      5. Fallback: use detected column offsets from header row
+
+    Prints first 5 raw lines and detected columns as diagnostic.
+    """
+    all_lines: list[str] = []
     col_names: list[str] | None = None
+    col_offsets: list[int] | None = None
+
+    SKIP_PATTERNS = re.compile(
+        r"maine\.gov|page \d|printed|report date|non-haz|active transporter|"
+        r"^\s*$|^-+$|department of environmental",
+        re.IGNORECASE,
+    )
+    HEADER_PATTERNS = re.compile(
+        r"license|permit|company|facility|name|address|city|state|zip|phone",
+        re.IGNORECASE,
+    )
 
     with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
         print(f"\n  PDF pages: {len(pdf.pages)}")
 
         for page_num, page in enumerate(pdf.pages, start=1):
-            tables = page.extract_tables()
-            for table in tables:
-                if not table:
+            text = page.extract_text()
+            if not text:
+                print(f"  Page {page_num}: no text extracted")
+                continue
+
+            lines = text.split("\n")
+            for line in lines:
+                stripped = line.rstrip()
+                if not stripped.strip():
                     continue
-                for row in table:
-                    if not row or not any(row):
+                if SKIP_PATTERNS.search(stripped.strip()):
+                    continue
+
+                # Detect header row
+                if col_names is None and HEADER_PATTERNS.search(stripped):
+                    # Split header on 2+ spaces to get column names
+                    parts = re.split(r"  +", stripped.strip())
+                    if len(parts) >= 2:
+                        col_names = [p.strip() for p in parts if p.strip()]
+                        col_offsets = detect_column_offsets(stripped)
+                        print(f"\n  Header line: {repr(stripped)}")
+                        print(f"  Column names detected: {col_names}")
+                        print(f"  Column offsets: {col_offsets}")
                         continue
 
-                    cells = [clean_cell(c) for c in row]
+                all_lines.append(stripped)
 
-                    # Detect header row
-                    row_upper = " ".join(cells).upper()
-                    if (
-                        "COMPANY" in row_upper
-                        or "NAME" in row_upper
-                        or "ADDRESS" in row_upper
-                        or "LICENSE" in row_upper
-                        or "PERMIT" in row_upper
-                    ) and col_names is None:
-                        col_names = cells
-                        print(f"\n  Column names detected: {col_names}")
-                        continue
+    # ── Diagnostic: print first 5 raw lines ──────────────────────────────────
+    print(f"\n--- DIAGNOSTIC ---")
+    print(f"  Total lines collected: {len(all_lines)}")
+    print(f"  First 5 raw lines:")
+    for i, line in enumerate(all_lines[:5]):
+        print(f"    [{i}] {repr(line)}")
 
-                    # Skip footer/junk rows
-                    if any(kw in row_upper for kw in ["MAINE.GOV", "PAGE ", "PRINTED"]):
-                        continue
-
-                    records.append(cells)
-
-    # Diagnostic: print first 3 rows
     if col_names:
-        print(f"\n  First 3 rows (raw):")
-        for row in records[:3]:
-            row_dict = dict(zip(col_names, row)) if col_names else {"row": row}
-            print(f"    {row_dict}")
-    else:
-        print("\n  No header row detected. First 3 raw rows:")
-        for row in records[:3]:
-            print(f"    {row}")
+        print(f"\n  Attempting split on 2+ spaces (first 3 lines):")
+        for line in all_lines[:3]:
+            parts = re.split(r"  +", line.strip())
+            print(f"    {parts}")
+
+    print(f"--- END DIAGNOSTIC ---\n")
+
+    # ── Parse data lines into field lists ────────────────────────────────────
+    records: list[list[str]] = []
+    for line in all_lines:
+        if not line.strip():
+            continue
+
+        # Primary: split on 2+ spaces
+        parts = re.split(r"  +", line.strip())
+        parts = [p.strip() for p in parts if p.strip()]
+
+        if len(parts) >= 2:
+            records.append(parts)
+            continue
+
+        # Fallback: use detected column offsets if available
+        if col_offsets and len(col_offsets) >= 2:
+            fields = split_fixed_width(line, col_offsets)
+            fields = [f.strip() for f in fields if f.strip()]
+            if len(fields) >= 2:
+                records.append(fields)
 
     return records, col_names
 
 
 def map_records(raw_rows: list[list[str]], col_names: list[str] | None) -> list[dict]:
     """
-    Map raw PDF rows to organization schema.
-    Handles both known-column and positional layouts.
+    Map raw parsed rows to organization schema.
+    Uses column names for field lookup when available, else positional.
+
+    Expected ME DEP fixed-width layout (typical):
+        License#  Company Name  Address  City  State  Zip  Phone
     """
     mapped = []
 
-    # Build column index map (case-insensitive)
+    # Build column index map (case-insensitive partial match)
     col_idx: dict[str, int] = {}
     if col_names:
         for i, name in enumerate(col_names):
             col_idx[name.lower()] = i
 
-    def get(row, *keys) -> str:
-        """Try multiple key variants, fall back to positional."""
+    def get(row: list[str], *keys: str) -> str:
         for key in keys:
             for col_key, idx in col_idx.items():
                 if key.lower() in col_key:
@@ -217,30 +281,33 @@ def map_records(raw_rows: list[list[str]], col_names: list[str] | None) -> list[
         return ""
 
     for row in raw_rows:
-        if not row:
+        if not row or len(row) < 2:
             continue
 
-        # Try to extract fields
         if col_names:
-            name = get(row, "company", "name", "business")
+            license_num = get(row, "license", "permit", "cert", "number", "id")
+            name = get(row, "company", "facility", "name", "business")
             address = get(row, "address", "addr", "street")
             city = get(row, "city", "town")
             state = get(row, "state", "st") or "ME"
             zip_code = get(row, "zip", "postal")
             phone = get(row, "phone", "tel")
-            license_num = get(row, "permit", "license", "cert", "number", "id")
         else:
-            # Positional fallback — adjust indices based on observed PDF layout
-            name = row[0] if len(row) > 0 else ""
-            address = row[1] if len(row) > 1 else ""
-            city = row[2] if len(row) > 2 else ""
-            state = row[3] if len(row) > 3 else "ME"
-            zip_code = row[4] if len(row) > 4 else ""
-            phone = row[5] if len(row) > 5 else ""
-            license_num = row[6] if len(row) > 6 else ""
+            # Positional fallback: License# Company Address City State Zip Phone
+            license_num = row[0] if len(row) > 0 else ""
+            name = row[1] if len(row) > 1 else ""
+            address = row[2] if len(row) > 2 else ""
+            city = row[3] if len(row) > 3 else ""
+            state = row[4] if len(row) > 4 else "ME"
+            zip_code = row[5] if len(row) > 5 else ""
+            phone = row[6] if len(row) > 6 else ""
 
         name = name.strip()
         if not name:
+            continue
+
+        # Skip rows that look like continued text or junk
+        if len(name) < 2 or re.match(r"^\d+$", name):
             continue
 
         mapped.append({
@@ -262,17 +329,17 @@ def main() -> None:
     print("=== WasteDirectory — Maine DEP Non-Haz Transporter Importer ===")
     print(datetime.utcnow().isoformat())
 
-    # ── 1. Scan data page ─────────────────────────────────────────────────────
+    # ── 1. Scan data page (supplementary — confirmed URL is in DIRECT_URLS) ──
     extra_urls = scan_data_page()
 
     # ── 2. Find and download PDF ──────────────────────────────────────────────
-    print(f"\nTrying {len(DIRECT_URLS)} known direct URLs + {len(extra_urls)} page links...")
+    print(f"\nTrying direct URLs first, then {len(extra_urls)} page links...")
     pdf_url, pdf_bytes = find_pdf(extra_urls)
 
     if not pdf_bytes:
         print("\n=== DIAGNOSTIC: No PDF found ===")
         print("Tried the following URLs:")
-        for url in list(dict.fromkeys(extra_urls + DIRECT_URLS)):
+        for url in list(dict.fromkeys(DIRECT_URLS + extra_urls)):
             print(f"  {url}")
         print("\nAction needed:")
         print("  1. Visit https://www.maine.gov/dep/maps-data/data.html manually")
@@ -282,20 +349,20 @@ def main() -> None:
 
     print(f"\nUsing PDF from: {pdf_url}")
 
-    # ── 3. Parse PDF ──────────────────────────────────────────────────────────
+    # ── 3. Parse PDF (fixed-width text) ───────────────────────────────────────
     try:
         raw_rows, col_names = parse_pdf(pdf_bytes)
     except Exception as exc:
         print(f"\nFailed to parse PDF: {exc}", file=sys.stderr)
         sys.exit(1)
 
-    print(f"\n  Total raw rows extracted: {len(raw_rows)}")
+    print(f"  Total data rows parsed: {len(raw_rows)}")
 
     mapped = map_records(raw_rows, col_names)
     print(f"  Records mapped to schema: {len(mapped)}")
 
     if not mapped:
-        print("\nNo records mapped — check PDF column detection above.")
+        print("\nNo records mapped — check the diagnostic output above for the actual line format.")
         sys.exit(0)
 
     if len(mapped) > SAFE_MAX:
@@ -445,12 +512,12 @@ def main() -> None:
     # ── 9. Summary ────────────────────────────────────────────────────────────
     total_errors = update_errors + insert_errors
     print("\n=== Summary ===")
-    print(f"  Total extracted  : {len(raw_rows)}")
-    print(f"  Mapped to schema : {len(mapped)}")
-    print(f"  Name-matched     : {len(to_update) + len(already_existed)}")
-    print(f"  Already existed  : {len(already_existed)}")
-    print(f"  Newly inserted   : {newly_inserted}")
-    print(f"  Errors           : {total_errors}")
+    print(f"  Total lines parsed   : {len(raw_rows)}")
+    print(f"  Mapped to schema     : {len(mapped)}")
+    print(f"  Name-matched         : {len(to_update) + len(already_existed)}")
+    print(f"  Already existed      : {len(already_existed)}")
+    print(f"  Newly inserted       : {newly_inserted}")
+    print(f"  Errors               : {total_errors}")
 
     if total_errors > 0:
         sys.exit(1)

@@ -2,11 +2,9 @@
 """
 pipelines/ct-deep-import/index.py
 
-Imports Connecticut DEEP waste transporter records from the official
-CT DEEP waste transporter list PDF.
-
-PDF source:
-    https://portal.ct.gov/-/media/deep/waste_management_and_disposal/transporters/deep-waste-transporter-list.pdf
+Imports Connecticut DEEP solid waste transporter records from the official
+CT DEEP waste transporter list PDF. Tries multiple known URLs in order,
+prints full diagnostics for each, and skips column-definition PDFs.
 
 Required env vars:
     SUPABASE_URL
@@ -31,12 +29,17 @@ SERVICE_TYPES = ["commercial", "residential"]
 SAFE_MAX = 1000
 BATCH_SIZE = 50
 
-PDF_URL = (
-    "https://portal.ct.gov/-/media/deep/waste_management_and_disposal"
-    "/transporters/deep-waste-transporter-list.pdf"
-)
+# Tried in order — first URL that returns a data PDF (not column-definition PDF) wins
+PDF_URLS = [
+    "https://portal.ct.gov/-/media/deep/waste_management_and_disposal/transporters/deep-waste-transporter-list.pdf",
+    "https://portal.ct.gov/-/media/DEEP/waste_management_and_disposal/transporters/SWTransporterList.pdf",
+    "https://portal.ct.gov/-/media/DEEP/waste_management_and_disposal/transporters/MSWtransporters.pdf",
+]
 
 HEADERS = {"User-Agent": "WasteDirectory-DataImport/1.0 (contact@wastedirectory.com)"}
+
+# If any of these appear in the first row, it's a column-definitions PDF, not data
+COLUMN_DEF_MARKERS = ["column heading", "meaning of the information", "column definition"]
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -83,83 +86,139 @@ def parse_date(raw: str) -> str | None:
 
 # ── PDF download ──────────────────────────────────────────────────────────────
 
-def download_pdf(url: str) -> bytes:
-    print(f"\nDownloading PDF: {url}")
-    resp = requests.get(url, headers=HEADERS, timeout=60)
-    resp.raise_for_status()
-    print(f"  Downloaded {len(resp.content):,} bytes")
-    return resp.content
+def try_download_pdf(url: str) -> bytes | None:
+    """Try to download a PDF. Returns bytes on success, None on failure."""
+    print(f"\nTrying: {url}")
+    try:
+        resp = requests.get(url, headers=HEADERS, timeout=60)
+        if resp.status_code == 200 and len(resp.content) > 1000:
+            content_type = resp.headers.get("Content-Type", "")
+            if "pdf" in content_type.lower() or url.lower().endswith(".pdf"):
+                print(f"  Downloaded {len(resp.content):,} bytes")
+                return resp.content
+            else:
+                print(f"  Skipped (not PDF, Content-Type={content_type})")
+        else:
+            print(f"  HTTP {resp.status_code} — skipping")
+    except Exception as exc:
+        print(f"  Error: {exc}")
+    return None
 
 
-# ── PDF parsing ───────────────────────────────────────────────────────────────
+# ── PDF inspection ────────────────────────────────────────────────────────────
 
-def parse_pdf(pdf_bytes: bytes) -> tuple[list[dict], list[str] | None]:
+def inspect_pdf(pdf_bytes: bytes, url: str) -> tuple[list[list[str]], list[str] | None, bool]:
     """
-    Extract transporter records from the CT DEEP PDF.
+    Open a PDF and print full diagnostics:
+      - First 1000 chars of raw text from page 1
+      - Number of tables found
+      - Column names and first 3 rows (if tables found)
 
-    Expected columns (per CT DEEP format):
-        Permit Number | Company Name | Address | City | State | Zip | Phone | Expiration Date
-
-    Prints column names and first 3 rows as diagnostic on every run.
-    Returns (records, col_names).
+    Returns (records, col_names, is_data_pdf).
+    is_data_pdf=False if the PDF looks like a column-definitions document.
     """
-    records = []
+    print(f"\n--- DIAGNOSTIC: {url} ---")
+
+    records: list[list[str]] = []
     col_names: list[str] | None = None
 
     with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
-        print(f"  PDF pages: {len(pdf.pages)}")
+        print(f"  Pages: {len(pdf.pages)}")
 
+        # Always print first 1000 chars of raw text from page 1
+        page1_text = pdf.pages[0].extract_text() or ""
+        print(f"\n  Raw text (first 1000 chars):\n  {repr(page1_text[:1000])}\n")
+
+        # Count and inspect tables across all pages
+        total_tables = 0
         for page_num, page in enumerate(pdf.pages, start=1):
             tables = page.extract_tables()
+            total_tables += len(tables)
+
             for table in tables:
                 if not table:
                     continue
-
                 for row in table:
                     if not row or not any(row):
                         continue
 
                     cells = [clean_cell(c) for c in row]
-                    row_text = " ".join(cells).upper()
+                    row_text = " ".join(cells)
 
                     # Detect header row
+                    row_upper = row_text.upper()
                     if col_names is None and (
-                        "PERMIT" in row_text
-                        or "LICENSE" in row_text
-                        or "COMPANY" in row_text
-                        or "TRANSPORTER" in row_text
+                        "PERMIT" in row_upper
+                        or "LICENSE" in row_upper
+                        or "COMPANY" in row_upper
+                        or "TRANSPORTER" in row_upper
+                        or "NAME" in row_upper
                     ):
                         col_names = cells
                         continue
 
                     # Skip obvious footer/junk
-                    if any(kw in row_text for kw in ["CT.GOV", "PAGE ", "PRINTED", "DEEP.CT"]):
+                    if any(kw in row_upper for kw in ["CT.GOV", "PAGE ", "PRINTED", "DEEP.CT"]):
                         continue
 
                     records.append(cells)
 
-    # ── Diagnostic: always print columns + first 3 rows ──────────────────────
-    print(f"\n--- DIAGNOSTIC ---")
-    print(f"  Column names: {col_names}")
-    print(f"  Total raw rows extracted: {len(records)}")
+        print(f"  Tables found: {total_tables}")
+        print(f"  Column names: {col_names}")
+        print(f"  Total data rows: {len(records)}")
+
+        if records:
+            print(f"  First 3 rows:")
+            for row in records[:3]:
+                if col_names:
+                    row_dict = dict(zip(col_names, row))
+                else:
+                    row_dict = {f"col_{i}": v for i, v in enumerate(row)}
+                print(f"    {row_dict}")
+
+    # Check if this looks like a column-definition PDF (not actual data)
+    first_row_text = ""
     if records:
-        print(f"  First 3 rows:")
-        for row in records[:3]:
-            if col_names:
-                row_dict = dict(zip(col_names, row))
-            else:
-                row_dict = {f"col_{i}": v for i, v in enumerate(row)}
-            print(f"    {row_dict}")
-    print(f"--- END DIAGNOSTIC ---\n")
+        first_row_text = " ".join(records[0]).lower()
+    elif col_names:
+        first_row_text = " ".join(col_names).lower()
+    elif page1_text:
+        first_row_text = page1_text[:500].lower()
 
-    return records, col_names
+    is_col_def = any(marker in first_row_text for marker in COLUMN_DEF_MARKERS)
+    if is_col_def:
+        print(f"\n  *** This PDF appears to be a column-definitions document — skipping ***")
 
+    print(f"--- END DIAGNOSTIC ---")
+    return records, col_names, not is_col_def
+
+
+# ── Find usable PDF ───────────────────────────────────────────────────────────
+
+def find_data_pdf() -> tuple[str, list[list[str]], list[str] | None] | tuple[None, None, None]:
+    """
+    Try each URL in PDF_URLS. For each successful download, run diagnostics.
+    Return the first URL that yields an actual data PDF (not column definitions).
+    """
+    for url in PDF_URLS:
+        pdf_bytes = try_download_pdf(url)
+        if not pdf_bytes:
+            continue
+
+        records, col_names, is_data = inspect_pdf(pdf_bytes, url)
+        if is_data and records:
+            print(f"\nUsing data PDF from: {url}")
+            return url, records, col_names
+
+    return None, None, None
+
+
+# ── Map records to schema ──────────────────────────────────────────────────────
 
 def map_records(raw_rows: list[list[str]], col_names: list[str] | None) -> list[dict]:
     """Map raw rows to organization schema using column names or positional fallback."""
     mapped = []
 
-    # Build column index map
     col_idx: dict[str, int] = {}
     if col_names:
         for i, name in enumerate(col_names):
@@ -187,8 +246,7 @@ def map_records(raw_rows: list[list[str]], col_names: list[str] | None) -> list[
             phone = get(row, "phone", "tel")
             expiration = get(row, "expir", "exp", "date")
         else:
-            # Positional fallback matching expected CT DEEP column order:
-            # Permit Number | Company Name | Address | City | State | Zip | Phone | Expiration
+            # Positional fallback: Permit | Company | Address | City | State | Zip | Phone | Expiry
             permit_number = row[0] if len(row) > 0 else ""
             company_name = row[1] if len(row) > 1 else ""
             address = row[2] if len(row) > 2 else ""
@@ -205,7 +263,7 @@ def map_records(raw_rows: list[list[str]], col_names: list[str] | None) -> list[
         if not company_name:
             continue
 
-        # ── Filter: CT records only ───────────────────────────────────────────
+        # Filter: CT records only
         is_ct_state = state_clean == "CT"
         is_ct_permit = permit_number.upper().startswith("CT")
         if not (is_ct_state or is_ct_permit):
@@ -231,34 +289,31 @@ def main() -> None:
     print("=== WasteDirectory — CT DEEP Waste Transporter Importer ===")
     print(datetime.utcnow().isoformat())
 
-    # ── 1. Download PDF ───────────────────────────────────────────────────────
-    try:
-        pdf_bytes = download_pdf(PDF_URL)
-    except Exception as exc:
-        print(f"\nFailed to download PDF: {exc}", file=sys.stderr)
-        print(f"URL tried: {PDF_URL}")
-        sys.exit(1)
+    # ── 1. Find a usable data PDF (tries all URLs, prints diagnostic for each) ─
+    pdf_url, raw_rows, col_names = find_data_pdf()
 
-    # ── 2. Parse PDF (always prints diagnostic) ───────────────────────────────
-    try:
-        raw_rows, col_names = parse_pdf(pdf_bytes)
-    except Exception as exc:
-        print(f"\nFailed to parse PDF: {exc}", file=sys.stderr)
-        sys.exit(1)
+    if pdf_url is None:
+        print("\n=== No usable data PDF found ===")
+        print("Tried:")
+        for url in PDF_URLS:
+            print(f"  {url}")
+        print("\nAction needed: find the correct CT DEEP solid waste transporter PDF URL")
+        print("and add it to PDF_URLS at the top of this script.")
+        sys.exit(0)
 
-    # ── 3. Map to schema and filter to CT ────────────────────────────────────
+    # ── 2. Map to schema and filter to CT ─────────────────────────────────────
     mapped = map_records(raw_rows, col_names)
-    print(f"  Records after CT filter: {len(mapped)}")
+    print(f"\n  Records after CT filter: {len(mapped)}")
 
     if not mapped:
-        print("\nNo CT records found — check column detection diagnostic above.")
+        print("\nNo CT records found — check column detection in diagnostic above.")
         sys.exit(0)
 
     if len(mapped) > SAFE_MAX:
         print(f"\nSAFE_MAX exceeded ({len(mapped)} > {SAFE_MAX}). Aborting.")
         sys.exit(1)
 
-    # ── 4. Connect to Supabase ────────────────────────────────────────────────
+    # ── 3. Connect to Supabase ─────────────────────────────────────────────────
     supabase_url = os.environ.get("SUPABASE_URL")
     service_role_key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
     if not supabase_url or not service_role_key:
@@ -270,7 +325,7 @@ def main() -> None:
 
     supabase: Client = create_client(supabase_url, service_role_key)
 
-    # ── 5. Load existing orgs for dedup ───────────────────────────────────────
+    # ── 4. Load existing orgs for dedup ───────────────────────────────────────
     print("\nLoading existing organizations for dedup...")
     existing_name_map: dict[str, dict] = {}
     existing_slug_set: set[str] = set()
@@ -296,7 +351,7 @@ def main() -> None:
 
     print(f"  Loaded {len(existing_name_map)} existing organizations")
 
-    # ── 6. Classify records ───────────────────────────────────────────────────
+    # ── 5. Classify records ───────────────────────────────────────────────────
     to_update: list[tuple[dict, dict]] = []
     already_existed: list[dict] = []
     to_insert: list[dict] = []
@@ -356,7 +411,7 @@ def main() -> None:
     if skipped_no_name:
         print(f"  Skipped (no name):               {skipped_no_name}")
 
-    # ── 7. Update existing orgs ───────────────────────────────────────────────
+    # ── 6. Update existing orgs ───────────────────────────────────────────────
     update_errors = 0
     for existing, record in to_update:
         current_states = existing.get("service_area_states") or []
@@ -374,7 +429,7 @@ def main() -> None:
             print(f"  ✗ Update failed for {existing['slug']}: {exc}")
             update_errors += 1
 
-    # ── 8. Insert new records ─────────────────────────────────────────────────
+    # ── 7. Insert new records ─────────────────────────────────────────────────
     insert_errors = 0
     newly_inserted = 0
 
@@ -404,7 +459,7 @@ def main() -> None:
                 print(f"  ✗ Batch {batch_num} failed: {exc}")
                 insert_errors += 1
 
-    # ── 9. Summary ────────────────────────────────────────────────────────────
+    # ── 8. Summary ────────────────────────────────────────────────────────────
     total_errors = update_errors + insert_errors
     print("\n=== Summary ===")
     print(f"  Total extracted  : {len(raw_rows)}")
