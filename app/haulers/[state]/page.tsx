@@ -419,24 +419,28 @@ async function HaulerProfilePage({ segment }: { segment: string }) {
         </section>
       )}
 
-      {/* License & Authorization Details */}
-      {org.license_metadata && Object.keys(org.license_metadata).length > 0 && (
+      {/* License & Authorization Details — shown whenever column exists */}
+      {org.license_metadata !== null && org.license_metadata !== undefined && (
         <section className="bg-white rounded-xl border border-gray-200 p-5 mb-4">
           <h2 className="font-semibold text-gray-900 mb-3">
             License &amp; Authorization Details
           </h2>
-          <dl className="space-y-2">
-            {Object.entries(org.license_metadata).map(([key, value]) => {
-              if (!value) return null;
-              const label = LICENSE_METADATA_LABELS[key] ?? key;
-              return (
-                <div key={key} className="flex gap-3 text-sm">
-                  <dt className="text-gray-500 shrink-0 min-w-[140px]">{label}</dt>
-                  <dd className="text-gray-900 font-medium">{value}</dd>
-                </div>
-              );
-            })}
-          </dl>
+          {Object.keys(org.license_metadata).length === 0 ? (
+            <p className="text-sm text-gray-400">No license details on file.</p>
+          ) : (
+            <dl className="space-y-2">
+              {Object.entries(org.license_metadata).map(([key, value]) => {
+                if (!value) return null;
+                const label = LICENSE_METADATA_LABELS[key] ?? key;
+                return (
+                  <div key={key} className="flex gap-3 text-sm">
+                    <dt className="text-gray-500 shrink-0 min-w-[140px]">{label}</dt>
+                    <dd className="text-gray-900 font-medium">{value}</dd>
+                  </div>
+                );
+              })}
+            </dl>
+          )}
         </section>
       )}
 
