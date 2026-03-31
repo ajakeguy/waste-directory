@@ -51,6 +51,7 @@ type OrgInsert = {
   hq_state: string | null;
   service_types: string[];
   service_area_states: string[];
+  license_metadata: Record<string, string>;
   verified: boolean;
   active: boolean;
   data_source: string;
@@ -127,6 +128,7 @@ type ParsedRow = {
   town: string;
   state: string;
   phone: string;
+  permitYear: string;
   wasteType: string;
 };
 
@@ -184,11 +186,12 @@ async function fetchAndParse(): Promise<ParsedRow[]> {
     const town = cells[4].text.trim();
     const state = cells[5].text.trim().toUpperCase();
     const phone = cells[6].text.trim();
+    const permitYear = cells[7].text.trim();
     const wasteType = cells[8].text.trim();
 
     if (!company) continue;
 
-    results.push({ company, contact, town, state, phone, wasteType });
+    results.push({ company, contact, town, state, phone, permitYear, wasteType });
   }
 
   return results;
@@ -298,6 +301,17 @@ async function main() {
     // Store contact name keyed by slug for use after org IDs are known
     if (row.contact) slugToContact.set(slug, row.contact);
 
+    // Build VT-specific license metadata
+    const licenseMetadata: Record<string, string> = {
+      vt_permit_type: "S",
+    };
+    if (row.permitYear) {
+      licenseMetadata["vt_permit_number"] = row.permitYear;
+    }
+    if (row.wasteType) {
+      licenseMetadata["vt_waste_type_raw"] = row.wasteType;
+    }
+
     candidates.push({
       name: row.company,
       slug,
@@ -308,6 +322,7 @@ async function main() {
       hq_state: row.state || null,
       service_types: mapWasteTypes(row.wasteType),
       service_area_states: ["VT"],
+      license_metadata: licenseMetadata,
       verified: true,
       active: true,
       data_source: DATA_SOURCE,
