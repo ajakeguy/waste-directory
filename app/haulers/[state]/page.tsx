@@ -246,6 +246,20 @@ async function StateLandingPage({
 
 // ── Hauler profile page ───────────────────────────────────────────────────────
 
+/** Human-readable labels for license_metadata keys. */
+const LICENSE_METADATA_LABELS: Record<string, string> = {
+  me_waste_category:  "Waste Categories (ME)",
+  bic_number:         "BIC License Number",
+  boro:               "Borough",
+  renewal:            "License Renewal Date",
+  pa_wh_id:           "PA Hauler ID",
+  pa_license_id:      "PA License ID",
+  pa_client_id:       "PA Client ID",
+  vt_permit_type:     "Permit Type",
+  vt_permit_number:   "Permit Year",
+  vt_waste_type_raw:  "Waste Type Codes",
+};
+
 /** Human-readable label for a contact source identifier. */
 function contactSourceLabel(source: string | null): string | null {
   if (!source) return null;
@@ -402,6 +416,27 @@ async function HaulerProfilePage({ segment }: { segment: string }) {
               </Badge>
             ))}
           </div>
+        </section>
+      )}
+
+      {/* License & Authorization Details */}
+      {org.license_metadata && Object.keys(org.license_metadata).length > 0 && (
+        <section className="bg-white rounded-xl border border-gray-200 p-5 mb-4">
+          <h2 className="font-semibold text-gray-900 mb-3">
+            License &amp; Authorization Details
+          </h2>
+          <dl className="space-y-2">
+            {Object.entries(org.license_metadata).map(([key, value]) => {
+              if (!value) return null;
+              const label = LICENSE_METADATA_LABELS[key] ?? key;
+              return (
+                <div key={key} className="flex gap-3 text-sm">
+                  <dt className="text-gray-500 shrink-0 min-w-[140px]">{label}</dt>
+                  <dd className="text-gray-900 font-medium">{value}</dd>
+                </div>
+              );
+            })}
+          </dl>
         </section>
       )}
 
