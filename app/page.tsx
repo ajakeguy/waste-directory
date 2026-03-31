@@ -5,16 +5,16 @@ import { ArticleCard } from "@/components/news/ArticleCard";
 
 const states = [
   {
-    name: "Vermont",
-    slug: "vermont",
-    abbr: "VT",
-    description: "Serving the Green Mountain State",
+    name: "Connecticut",
+    slug: "connecticut",
+    abbr: "CT",
+    description: "Serving the Constitution State",
   },
   {
-    name: "New York",
-    slug: "new-york",
-    abbr: "NY",
-    description: "Serving the Empire State",
+    name: "Maine",
+    slug: "maine",
+    abbr: "ME",
+    description: "Serving the Pine Tree State",
   },
   {
     name: "Massachusetts",
@@ -23,16 +23,28 @@ const states = [
     description: "Serving the Bay State",
   },
   {
+    name: "New Jersey",
+    slug: "new-jersey",
+    abbr: "NJ",
+    description: "Serving the Garden State",
+  },
+  {
+    name: "New York",
+    slug: "new-york",
+    abbr: "NY",
+    description: "Serving the Empire State",
+  },
+  {
     name: "Pennsylvania",
     slug: "pennsylvania",
     abbr: "PA",
     description: "Serving the Keystone State",
   },
   {
-    name: "New Jersey",
-    slug: "new-jersey",
-    abbr: "NJ",
-    description: "Serving the Garden State",
+    name: "Vermont",
+    slug: "vermont",
+    abbr: "VT",
+    description: "Serving the Green Mountain State",
   },
 ];
 
@@ -78,10 +90,10 @@ export default async function HomePage() {
             Browse by State
           </h2>
           <p className="text-gray-500 text-center mb-10">
-            Find licensed waste haulers serving Vermont, New York, Massachusetts, Pennsylvania, and New Jersey
+            Find licensed waste haulers serving Connecticut, Maine, Massachusetts, New Jersey, New York, Pennsylvania, and Vermont
           </p>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-6">
+          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-6">
             {states.map((state) => (
               <Link
                 key={state.slug}

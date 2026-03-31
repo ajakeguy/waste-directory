@@ -50,31 +50,36 @@ export const SERVICE_TYPE_LABELS: Record<ServiceType, string> = {
 export const SERVICE_TYPES = Object.keys(SERVICE_TYPE_LABELS) as ServiceType[]
 
 export const STATE_SLUG_TO_CODE: Record<string, string> = {
-  vermont: "VT",
-  "new-york": "NY",
+  connecticut: "CT",
+  maine: "ME",
   massachusetts: "MA",
-  pennsylvania: "PA",
   "new-jersey": "NJ",
+  "new-york": "NY",
+  pennsylvania: "PA",
+  vermont: "VT",
 }
 
 export const STATE_CODE_TO_SLUG: Record<string, string> = {
-  VT: "vermont",
-  NY: "new-york",
+  CT: "connecticut",
+  ME: "maine",
   MA: "massachusetts",
-  PA: "pennsylvania",
   NJ: "new-jersey",
+  NY: "new-york",
+  PA: "pennsylvania",
+  VT: "vermont",
 }
 
 export const STATE_SLUG_TO_NAME: Record<string, string> = {
-  vermont: "Vermont",
-  "new-york": "New York",
+  connecticut: "Connecticut",
+  maine: "Maine",
   massachusetts: "Massachusetts",
-  pennsylvania: "Pennsylvania",
   "new-jersey": "New Jersey",
+  "new-york": "New York",
+  pennsylvania: "Pennsylvania",
+  vermont: "Vermont",
 }
 
 export const VALID_STATE_SLUGS = Object.keys(STATE_SLUG_TO_CODE)
-
 // ── User lists & saved items ───────────────────────────────────────────────────
 
 export type UserList = {

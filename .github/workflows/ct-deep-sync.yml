@@ -1,0 +1,32 @@
+name: CT DEEP Hauler Sync
+
+on:
+  # Run on the 10th of each month at 3am UTC
+  schedule:
+    - cron: "0 3 10 * *"
+  # Allow manual runs from the GitHub Actions UI
+  workflow_dispatch:
+
+jobs:
+  import-ct-deep:
+    name: Download and import CT DEEP waste transporters
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Python dependencies
+        run: pip install requests pdfplumber supabase
+
+      - name: Run CT DEEP importer
+        run: python pipelines/ct-deep-import/index.py
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
