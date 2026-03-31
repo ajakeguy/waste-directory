@@ -87,6 +87,10 @@ COLUMN_ALIASES: dict[str, list[str]] = {
     "wh_number":    ["waste_hauler_id", "waste hauler id", "wh number",
                      "whnumber", "wh #", "authorization number",
                      "auth number", "permit number", "hauler number"],
+    # Primary: LICENSE_ID (separate from WASTE_HAULER_ID)
+    "license_id":   ["license_id", "license id", "licenseid"],
+    # Primary: CLIENT_ID
+    "client_id":    ["client_id", "client id", "clientid"],
     # Primary: WASTE_HAULER_NAME
     "company_name": ["waste_hauler_name", "waste hauler name",
                      "company name", "companyname", "business name",
@@ -356,6 +360,18 @@ def main() -> None:
         raw_state = s(get_val(row_dict, df_cols, "state")) or "PA"
         state     = raw_state[:2].upper() if len(raw_state) >= 2 else raw_state.upper()
 
+        # Build license_metadata with PA-specific IDs
+        license_metadata: dict[str, str] = {}
+        wh_id     = s(get_val(row_dict, df_cols, "wh_number"))
+        license_id = s(get_val(row_dict, df_cols, "license_id"))
+        client_id  = s(get_val(row_dict, df_cols, "client_id"))
+        if wh_id:
+            license_metadata["pa_wh_id"] = wh_id
+        if license_id:
+            license_metadata["pa_license_id"] = license_id
+        if client_id:
+            license_metadata["pa_client_id"] = client_id
+
         # Note: no ADDRESS column in the PA DEP WTSP report; omit the key
         to_insert.append({
             "name":                name,
@@ -365,8 +381,9 @@ def main() -> None:
             "state":               state,
             "zip":                 s(get_val(row_dict, df_cols, "zip")),
             "phone":               clean_phone(get_val(row_dict, df_cols, "phone")),
-            "license_number":      s(get_val(row_dict, df_cols, "wh_number")),
+            "license_number":      wh_id,
             "license_expiry":      iso_date(get_val(row_dict, df_cols, "expiration")),
+            "license_metadata":    license_metadata,
             "service_types":       ["residential", "commercial"],
             "service_area_states": ["PA"],
             "verified":            True,
@@ -387,7 +404,7 @@ def main() -> None:
     for rec in to_insert[:5]:
         print(f"  {rec['name']!r:45s}  city={rec['city']!r:20s}  "
               f"state={rec['state']}  license={rec['license_number']!r}  "
-              f"expiry={rec['license_expiry']!r}")
+              f"expiry={rec['license_expiry']!r}  metadata={rec['license_metadata']!r}")
 
     # ── 5. Connect to Supabase ────────────────────────────────────────────────
     supabase: Client = create_client(supabase_url, service_role_key)
