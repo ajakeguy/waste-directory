@@ -17,6 +17,7 @@ export type Organization = {
   lng: number | null
   service_types: string[] | null
   service_area_states: string[] | null
+  license_metadata: Record<string, string> | null
   verified: boolean
   active: boolean
   data_source: string | null
@@ -34,17 +35,19 @@ export type ServiceType =
   | "hazmat"
   | "e_waste"
   | "medical"
+  | "septage"
 
 export const SERVICE_TYPE_LABELS: Record<ServiceType, string> = {
   residential: "Residential Pickup",
   commercial: "Commercial Pickup",
-  roll_off: "Roll-Off Containers",
+  roll_off: "Roll-Off / C&D",
   industrial: "Industrial Waste",
   recycling: "Recycling Services",
   composting: "Composting",
   hazmat: "Hazardous Waste",
   e_waste: "E-Waste / Electronics",
   medical: "Medical Waste",
+  septage: "Septage / Pumping",
 }
 
 export const SERVICE_TYPES = Object.keys(SERVICE_TYPE_LABELS) as ServiceType[]
