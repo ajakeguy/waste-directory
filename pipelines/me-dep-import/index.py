@@ -27,6 +27,10 @@ from supabase import create_client, Client
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
+# Set to True to print raw PDF text and exit WITHOUT touching the database.
+# Flip to False once column alignment is confirmed correct.
+DIAGNOSTIC_ONLY = True
+
 DATA_SOURCE = "me_dep_2026"
 SERVICE_AREA_STATES = ["ME"]
 SAFE_MAX = 1000
@@ -245,9 +249,25 @@ def parse_lines(
             if len(parts) >= 2:
                 col_names = parts
                 col_offsets = detect_column_offsets(line)
-                print(f"\n  Header line : {repr(line)}")
-                print(f"  Col names   : {col_names}")
-                print(f"  Col offsets : {col_offsets}")
+                print(f"\n{'='*60}")
+                print(f"HEADER DETECTED")
+                print(f"{'='*60}")
+                print(f"  Raw header line : {repr(line)}")
+                print(f"  Col names       : {col_names}")
+                print(f"  Col offsets     : {col_offsets}")
+                # Print a visual ruler showing exact character positions
+                ruler_tens = "".join(str(i // 10) if i % 10 == 0 else " " for i in range(len(line) + 10))
+                ruler_ones = "".join(str(i % 10) for i in range(len(line) + 10))
+                print(f"\n  Position ruler:")
+                print(f"    {ruler_tens}")
+                print(f"    {ruler_ones}")
+                print(f"    {line}")
+                # Per-column offset table
+                print(f"\n  Column positions:")
+                for i, (name, offset) in enumerate(zip(col_names, col_offsets)):
+                    end = col_offsets[i + 1] if i + 1 < len(col_offsets) else len(line)
+                    print(f"    col[{i}] offset={offset:3d}–{end:3d}  name={name!r}")
+                print(f"{'='*60}\n")
             continue
 
         data_lines.append(line)
@@ -471,16 +491,28 @@ def main() -> None:
         print(f"\nFailed to extract text from PDF: {exc}", file=sys.stderr)
         sys.exit(1)
 
-    # Always print full page 1 raw text so we can see the exact format
+    # ── 3b. Print full page 1 with line numbers ───────────────────────────────
+    page1_lines = page1_text.split("\n")
     print(f"\n{'='*60}")
-    print(f"FULL PAGE 1 RAW TEXT ({len(page1_text)} chars):")
+    print(f"FULL PAGE 1 RAW TEXT — {len(page1_lines)} lines, {len(page1_text)} chars")
+    print(f"(line numbers shown on left; spaces preserved exactly)")
     print(f"{'='*60}")
-    print(page1_text)
+    for lineno, line in enumerate(page1_lines, start=1):
+        print(f"  {lineno:4d} | {line}")
     print(f"{'='*60}\n")
 
-    # ── 4. Parse fixed-width lines ────────────────────────────────────────────
+    # ── 4. Parse fixed-width lines (detects header + column offsets) ──────────
     raw_rows, col_names, col_offsets = parse_lines(all_lines)
     print(f"\n  Total rows after parsing: {len(raw_rows)}")
+
+    # ── DIAGNOSTIC MODE: exit before any database operations ──────────────────
+    if DIAGNOSTIC_ONLY:
+        print("\n" + "="*60)
+        print("DIAGNOSTIC_ONLY = True — exiting before DB operations.")
+        print("Review the raw text and header offsets above, then set")
+        print("DIAGNOSTIC_ONLY = False to enable actual imports.")
+        print("="*60)
+        sys.exit(0)
 
     # ── 5. Map to schema ──────────────────────────────────────────────────────
     mapped = map_records(raw_rows, col_names)
