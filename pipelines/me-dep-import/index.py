@@ -533,10 +533,10 @@ def main() -> None:
     print(f"  Loaded {len(existing_name_map)} existing organizations")
 
     # ── 8. Classify records ───────────────────────────────────────────────────
-    to_update: list[tuple[dict, dict]] = []
-    already_existed: list[dict] = []
-    to_insert: list[dict] = []
-    seen_slugs: set[str] = set()
+    to_update:          list[tuple[dict, dict]] = []  # (existing_org, record) — name-matched
+    slug_matched_updates: list[tuple[str, dict]] = []  # (slug, record) — slug-matched only
+    to_insert:          list[dict] = []
+    seen_slugs:         set[str]   = set()
     skipped_no_name = 0
 
     for record in mapped:
@@ -558,9 +558,16 @@ def main() -> None:
             skipped_no_name += 1
             continue
 
+        # If the natural slug is already in DB (but name didn't match), update it
+        # rather than creating a duplicate with a -N suffix.
+        if base_slug in existing_slug_set:
+            slug_matched_updates.append((base_slug, record))
+            continue
+
+        # New record — ensure slug is unique within this batch
         slug = base_slug
         counter = 1
-        while slug in existing_slug_set or slug in seen_slugs:
+        while slug in seen_slugs:
             slug = f"{base_slug}-{counter}"
             counter += 1
         seen_slugs.add(slug)
@@ -584,6 +591,7 @@ def main() -> None:
         })
 
     print(f"\n  Name-matched (will update):      {len(to_update)}")
+    print(f"  Slug-matched (will update):      {len(slug_matched_updates)}")
     print(f"  New records to insert:           {len(to_insert)}")
     if skipped_no_name:
         print(f"  Skipped (no name):               {skipped_no_name}")
@@ -604,6 +612,22 @@ def main() -> None:
         except Exception as exc:
             print(f"  ✗ Update failed for {existing['slug']}: {exc}")
             update_errors += 1
+
+    # ── 9b. Update slug-matched existing orgs (name didn't match, slug did) ─────
+    slug_update_errors = 0
+    slug_updated = 0
+
+    for slug, record in slug_matched_updates:
+        try:
+            supabase.table("organizations").update({
+                "service_types":    record["service_types"],
+                "license_metadata": record["license_metadata"],
+            }).eq("slug", slug).execute()
+            slug_updated += 1
+            print(f"  ✓ Slug-updated {slug} — service_types={record['service_types']}")
+        except Exception as exc:
+            print(f"  ✗ Slug update failed for {slug}: {exc}")
+            slug_update_errors += 1
 
     # ── 10. Insert new records ────────────────────────────────────────────────
     insert_errors = 0
@@ -636,11 +660,12 @@ def main() -> None:
                 insert_errors += 1
 
     # ── 11. Summary ───────────────────────────────────────────────────────────
-    total_errors = update_errors + insert_errors
+    total_errors = update_errors + slug_update_errors + insert_errors
     print("\n=== Summary ===")
     print(f"  Total lines parsed   : {len(raw_rows)}")
     print(f"  Mapped to schema     : {len(mapped)}")
     print(f"  Name-matched/updated : {len(to_update)}")
+    print(f"  Slug-matched/updated : {slug_updated}")
     print(f"  Newly inserted       : {newly_inserted}")
     print(f"  Errors               : {total_errors}")
 

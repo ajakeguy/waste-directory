@@ -430,9 +430,9 @@ def main() -> None:
     print(f"Existing slugs in DB   : {len(existing_slugs)}")
 
     new_records = [r for r in to_insert if r["slug"] not in existing_slugs]
-    skipped_db  = len(to_insert) - len(new_records)
-    print(f"Already in DB          : {skipped_db}")
+    to_update   = [r for r in to_insert if r["slug"]     in existing_slugs]
     print(f"Net new to insert      : {len(new_records)}")
+    print(f"Existing to update     : {len(to_update)}")
 
     # ── 7. Safety check ───────────────────────────────────────────────────────
     if len(new_records) > SAFE_MAX:
@@ -443,12 +443,12 @@ def main() -> None:
         )
         sys.exit(1)
 
-    # ── 8. Batch insert ───────────────────────────────────────────────────────
-    inserted = 0
-    errors   = 0
+    # ── 8. Batch insert new records ───────────────────────────────────────────
+    inserted      = 0
+    insert_errors = 0
 
     if not new_records:
-        print("\nAll records already in DB — nothing to insert.")
+        print("\nNo new records to insert.")
     else:
         print(f"\nInserting {len(new_records)} records in batches of {BATCH_SIZE} ...")
         for i in range(0, len(new_records), BATCH_SIZE):
@@ -462,18 +462,44 @@ def main() -> None:
                 print(f"  ✗ Batch {batch_num} failed: {exc}")
                 print(f"  ✗ Batch error detail: {exc!r}")
                 print(f"  ✗ First record in failed batch: {batch[0] if batch else 'unknown'}")
-                errors += 1
+                insert_errors += 1
+
+    # ── 8b. Update existing records with fresh metadata ───────────────────────
+    updated      = 0
+    update_errors = 0
+
+    if not to_update:
+        print("\nNo existing records to update.")
+    else:
+        print(f"\nUpdating {len(to_update)} existing records with fresh metadata ...")
+        for i in range(0, len(to_update), BATCH_SIZE):
+            batch     = to_update[i : i + BATCH_SIZE]
+            batch_num = i // BATCH_SIZE + 1
+            for rec in batch:
+                try:
+                    supabase.table("organizations").update({
+                        "license_number":   rec["license_number"],
+                        "license_expiry":   rec["license_expiry"],
+                        "license_metadata": rec["license_metadata"],
+                        "service_types":    rec["service_types"],
+                    }).eq("slug", rec["slug"]).execute()
+                    updated += 1
+                except Exception as exc:
+                    print(f"  ✗ Update failed for {rec['slug']}: {exc}")
+                    update_errors += 1
+            print(f"  ✓ Batch {batch_num}: {len(batch)} records processed")
 
     # ── 9. Summary ────────────────────────────────────────────────────────────
+    errors = insert_errors + update_errors
     print("\n=== Summary ===")
     print(f"  Total in report      : {total_fetched}")
     print(f"  After active filter  : {len(df)}")
     print(f"  Mapped to schema     : {len(to_insert)}")
-    print(f"  Already in DB        : {skipped_db}")
     print(f"  Inserted             : {inserted}")
+    print(f"  Updated              : {updated}")
     print(f"  Errors               : {errors}")
 
-    if inserted == 0 and errors > 0:
+    if errors > 0 and inserted == 0 and updated == 0:
         sys.exit(1)
 
 

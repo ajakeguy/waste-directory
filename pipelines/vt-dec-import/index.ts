@@ -149,6 +149,7 @@ type ExistingOrg = {
 type NameMatch = {
   existingOrg: ExistingOrg;
   contactName: string | null;
+  licenseMetadata: Record<string, string>;
 };
 
 async function fetchAndParse(): Promise<ParsedRow[]> {
@@ -277,7 +278,11 @@ async function main() {
       );
       if (!matchedOrgIds.has(existingOrg.id)) {
         matchedOrgIds.add(existingOrg.id);
-        nameMatches.push({ existingOrg, contactName: row.contact || null });
+        // Build license_metadata for this matched record
+        const matchedMeta: Record<string, string> = { vt_permit_type: "S" };
+        if (row.permitYear) matchedMeta["vt_permit_number"] = row.permitYear;
+        if (row.wasteType)  matchedMeta["vt_waste_type_raw"] = row.wasteType;
+        nameMatches.push({ existingOrg, contactName: row.contact || null, licenseMetadata: matchedMeta });
       }
       // Always update contact with latest value for this org
       if (row.contact) slugToContact.set(existingOrg.slug, row.contact);
@@ -333,21 +338,28 @@ async function main() {
     `Name-matched to existing: ${nameMatches.length}  |  New candidates: ${candidates.length}`
   );
 
-  // 5a. Ensure VT is in service_area_states for name-matched existing orgs
-  for (const { existingOrg } of nameMatches) {
+  // 5a. Update name-matched existing orgs: always refresh license_metadata,
+  //     and add VT to service_area_states if not already present.
+  let nameMatchUpdated = 0;
+  for (const { existingOrg, licenseMetadata } of nameMatches) {
     const current = existingOrg.service_area_states ?? [];
+    const updatePayload: Record<string, unknown> = {
+      license_metadata: licenseMetadata,
+    };
     if (!current.includes("VT")) {
-      const { error: updateErr } = await supabase
-        .from("organizations")
-        .update({ service_area_states: [...current, "VT"] })
-        .eq("id", existingOrg.id);
-      if (updateErr) {
-        console.error(
-          `  ✗ Failed to update service_area_states for ${existingOrg.slug}: ${updateErr.message}`
-        );
-      } else {
-        console.log(`  Updated service_area_states for ${existingOrg.slug} to include VT`);
-      }
+      updatePayload.service_area_states = [...current, "VT"];
+    }
+    const { error: updateErr } = await supabase
+      .from("organizations")
+      .update(updatePayload)
+      .eq("id", existingOrg.id);
+    if (updateErr) {
+      console.error(
+        `  ✗ Failed to update ${existingOrg.slug}: ${updateErr.message}`
+      );
+    } else {
+      nameMatchUpdated++;
+      console.log(`  ✓ Updated ${existingOrg.slug} (license_metadata + service_area_states)`);
     }
   }
 
@@ -366,13 +378,14 @@ async function main() {
   const existingSlugs = new Set(
     (slugRows ?? []).map((r: { slug: string }) => r.slug)
   );
-  const newOrgs = candidates.filter((c) => !existingSlugs.has(c.slug));
+  const newOrgs      = candidates.filter((c) => !existingSlugs.has(c.slug));
+  const slugUpdates  = candidates.filter((c) =>  existingSlugs.has(c.slug));
 
   console.log(
-    `Slug-matched to existing: ${existingSlugs.size}  |  New to insert: ${newOrgs.length}`
+    `Slug-matched to update  : ${slugUpdates.length}  |  New to insert: ${newOrgs.length}`
   );
 
-  if (newOrgs.length === 0 && nameMatches.length === 0) {
+  if (newOrgs.length === 0 && nameMatches.length === 0 && slugUpdates.length === 0) {
     console.log("\nAll records already exist — checking contacts only.");
   }
 
@@ -398,6 +411,28 @@ async function main() {
         `  ✓ Batch ${Math.floor(i / BATCH) + 1}: inserted ${batch.length} records`
       );
     }
+  }
+
+  // 5d. Update slug-matched candidates with fresh license_metadata
+  let slugUpdated = 0;
+  for (let i = 0; i < slugUpdates.length; i += BATCH) {
+    const batch = slugUpdates.slice(i, i + BATCH);
+    for (const org of batch) {
+      const { error: updateErr } = await supabase
+        .from("organizations")
+        .update({
+          license_metadata: org.license_metadata,
+          service_types:    org.service_types,
+        })
+        .eq("slug", org.slug);
+      if (updateErr) {
+        console.error(`  ✗ Slug update failed for ${org.slug}: ${updateErr.message}`);
+        errors++;
+      } else {
+        slugUpdated++;
+      }
+    }
+    console.log(`  ✓ Slug-update batch ${Math.floor(i / BATCH) + 1}: ${batch.length} processed`);
   }
 
   // 6. Import contacts for all candidate orgs (new + pre-existing)
@@ -476,13 +511,13 @@ async function main() {
 
   // 7. Summary
   console.log("\n=== Summary ===");
-  console.log(`Total found    : ${allRows.length}`);
-  console.log(`Solid waste (S): ${filtered.length}`);
-  console.log(`Name-matched   : ${nameMatches.length}`);
-  console.log(`Slug-matched   : ${existingSlugs.size}`);
-  console.log(`Orgs inserted  : ${inserted}`);
-  console.log(`Contacts ins.  : ${contactsInserted}`);
-  console.log(`Errors         : ${errors}`);
+  console.log(`Total found         : ${allRows.length}`);
+  console.log(`Solid waste (S)     : ${filtered.length}`);
+  console.log(`Name-match updated  : ${nameMatchUpdated}`);
+  console.log(`Slug-match updated  : ${slugUpdated}`);
+  console.log(`Orgs inserted       : ${inserted}`);
+  console.log(`Contacts inserted   : ${contactsInserted}`);
+  console.log(`Errors              : ${errors}`);
 
   if (errors > 0) process.exit(1);
 }

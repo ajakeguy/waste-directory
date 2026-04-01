@@ -236,10 +236,10 @@ def main() -> None:
 
     print(f"Existing slugs loaded  : {len(existing_slugs)}")
 
-    # ── 6. Build insert list — slug dedup entirely in Python ─────────────────
+    # ── 6. Build insert / update lists ───────────────────────────────────────
     to_insert:  list[dict] = []
+    to_update:  list[dict] = []
     seen_slugs: set[str]   = set()
-    skipped_slug = 0
 
     for rec in license_records:
         name = s(rec.get("account_name")) or ""
@@ -251,14 +251,17 @@ def main() -> None:
         if not slug:
             continue
 
-        if slug in existing_slugs or slug in seen_slugs:
-            skipped_slug += 1
-            continue
+        if slug in seen_slugs:
+            continue  # in-batch duplicate — skip second occurrence
         seen_slugs.add(slug)
 
-        state = s(rec.get("state")) or "NY"
-        bic_number = s(rec.get("bic_number")) or ""
-        expiry = iso_date(s(rec.get("expiration_date")))
+        state          = s(rec.get("state")) or "NY"
+        bic_number     = s(rec.get("bic_number")) or ""
+        expiry         = iso_date(s(rec.get("expiration_date")))
+        recycling_type = s(rec.get("authorized_recycling_collection_type"))
+
+        # Include 'recycling' in service_types when recycling collection is authorised
+        service_types = ["commercial", "recycling"] if recycling_type else ["commercial"]
 
         # Build license_metadata with BIC-specific fields
         license_metadata: dict[str, str] = {}
@@ -269,8 +272,10 @@ def main() -> None:
             license_metadata["boro"] = boro
         if expiry:
             license_metadata["renewal"] = expiry
+        if recycling_type:
+            license_metadata["authorized_recycling_type"] = recycling_type
 
-        to_insert.append({
+        record = {
             "name":                name,
             "slug":                slug,
             "org_type":            "hauler",
@@ -286,24 +291,34 @@ def main() -> None:
             "license_number":      bic_number or None,
             "license_expiry":      expiry,
             "license_metadata":    license_metadata,
-            "service_types":       ["commercial"],
+            "service_types":       service_types,
             "service_area_states": ["NY"],
             "verified":            True,
             "active":              True,
             "data_source":         DATA_SOURCE,
-        })
+        }
 
-    print(f"After slug dedup       : {len(to_insert)} new records"
-          + (f"  ({skipped_slug} already in DB)" if skipped_slug else ""))
+        if slug in existing_slugs:
+            to_update.append(record)
+        else:
+            to_insert.append(record)
 
-    # ── 7. Preview first 5 records ────────────────────────────────────────────
+    print(f"New records to insert  : {len(to_insert)}")
+    print(f"Existing to update     : {len(to_update)}")
+
+    # ── 7. Preview ────────────────────────────────────────────────────────────
     if to_insert:
         print("\nFirst 5 records to insert:")
         for rec in to_insert[:5]:
             print(f"  {rec['name']!r:45s}  city={rec['city']!r:20s}  "
                   f"slug={rec['slug']!r}  metadata={rec['license_metadata']!r}")
+    if to_update:
+        print("\nFirst 5 records to update:")
+        for rec in to_update[:5]:
+            print(f"  {rec['name']!r:45s}  slug={rec['slug']!r}  "
+                  f"metadata={rec['license_metadata']!r}")
 
-    # ── 8. Safety check ───────────────────────────────────────────────────────
+    # ── 8. Safety check on new inserts ────────────────────────────────────────
     if len(to_insert) > SAFE_MAX:
         print(
             f"\nWARNING: {len(to_insert)} new records seems too high for BIC active "
@@ -312,32 +327,58 @@ def main() -> None:
         )
         sys.exit(1)
 
-    # ── 9. Insert in batches ──────────────────────────────────────────────────
-    inserted = 0
-    errors   = 0
+    # ── 9. Insert new records ─────────────────────────────────────────────────
+    inserted     = 0
+    insert_errors = 0
 
     if not to_insert:
-        print("\nNothing new to insert — all records already exist.")
+        print("\nNothing new to insert.")
     else:
-        print(f"\nInserting {len(to_insert)} records in batches of {BATCH_SIZE} ...")
+        print(f"\nInserting {len(to_insert)} new records in batches of {BATCH_SIZE} ...")
         for i in range(0, len(to_insert), BATCH_SIZE):
             batch     = to_insert[i : i + BATCH_SIZE]
             batch_num = i // BATCH_SIZE + 1
             try:
                 supabase.table("organizations").insert(batch).execute()
                 inserted += len(batch)
-                print(f"  ✓ Batch {batch_num}: {len(batch)} records")
+                print(f"  ✓ Batch {batch_num}: {len(batch)} records inserted")
             except Exception as exc:
                 print(f"  ✗ Batch {batch_num} failed: {exc}")
-                errors += 1
+                insert_errors += 1
+
+    # ── 9b. Update existing records with fresh metadata ───────────────────────
+    updated      = 0
+    update_errors = 0
+
+    if not to_update:
+        print("\nNo existing records to update.")
+    else:
+        print(f"\nUpdating {len(to_update)} existing records with fresh metadata ...")
+        for i in range(0, len(to_update), BATCH_SIZE):
+            batch     = to_update[i : i + BATCH_SIZE]
+            batch_num = i // BATCH_SIZE + 1
+            for rec in batch:
+                try:
+                    supabase.table("organizations").update({
+                        "license_number":   rec["license_number"],
+                        "license_expiry":   rec["license_expiry"],
+                        "license_metadata": rec["license_metadata"],
+                        "service_types":    rec["service_types"],
+                    }).eq("slug", rec["slug"]).execute()
+                    updated += 1
+                except Exception as exc:
+                    print(f"  ✗ Update failed for {rec['slug']}: {exc}")
+                    update_errors += 1
+            print(f"  ✓ Batch {batch_num}: {len(batch)} records processed")
 
     # ── 10. Summary ───────────────────────────────────────────────────────────
+    errors = insert_errors + update_errors
     print("\n=== Summary ===")
     print(f"  Total from API       : {len(raw_records)}")
     print(f"  Unique BIC numbers   : {len(by_bic)}")
     print(f"  License type         : {len(license_records)}")
-    print(f"  Already in DB        : {skipped_slug}")
     print(f"  Inserted             : {inserted}")
+    print(f"  Updated              : {updated}")
     print(f"  Errors               : {errors}")
 
     if errors > 0:
