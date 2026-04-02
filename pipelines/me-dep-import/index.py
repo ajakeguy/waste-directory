@@ -3,9 +3,17 @@
 pipelines/me-dep-import/index.py
 
 Imports Maine DEP non-hazardous waste transporters from the Maine DEP
-data portal. The PDF uses a fixed-width text layout (not tables).
+data portal PDF.
 
-PDF source (confirmed):
+Parsing strategy: right-anchored regex, since the state code, phone,
+category codes, and expiry date are always structured on the right side
+of each fixed-width line.
+
+Multi-line records: company names that wrap to a second line are detected
+by the absence of a phone number pattern and are appended to the previous
+record's name.
+
+PDF source:
     https://www.maine.gov/dep/ftp/reports/nactive.pdf
 
 Required env vars:
@@ -19,7 +27,6 @@ import re
 import sys
 from datetime import datetime
 
-import pandas as pd
 import pdfplumber
 import requests
 from bs4 import BeautifulSoup
@@ -27,14 +34,14 @@ from supabase import create_client, Client
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
-# Set to True to print raw PDF text and exit WITHOUT touching the database.
-# Flip to False once column alignment is confirmed correct.
-DIAGNOSTIC_ONLY = True
+# Set to True to print parsed records and exit WITHOUT touching the database.
+# Flip to False once parsing is confirmed correct.
+DIAGNOSTIC_ONLY = False
 
-DATA_SOURCE = "me_dep_2026"
+DATA_SOURCE      = "me_dep_2026"
 SERVICE_AREA_STATES = ["ME"]
-SAFE_MAX = 1000
-BATCH_SIZE = 50
+SAFE_MAX         = 1000
+BATCH_SIZE       = 50
 
 DATA_PAGE_URL = "https://www.maine.gov/dep/maps-data/data.html"
 
@@ -51,28 +58,46 @@ HEADERS = {"User-Agent": "WasteDirectory-DataImport/1.0 (contact@wastedirectory.
 
 LINK_KEYWORDS = re.compile(r"transporter|non-haz|nonhaz|hauler", re.IGNORECASE)
 
-# Words that indicate a line is the header row
-HEADER_WORDS = re.compile(
-    r"\b(license|permit|company|facility|name|address|city|state|zip|phone)\b",
-    re.IGNORECASE,
-)
-
 # ME DEP waste category code → service_types mapping
-# A = Commercial/Industrial (roll-off / C&D, industrial)
+# A = Special/C&D Waste (roll-off, industrial)
 # B = Municipal Solid Waste (residential, commercial)
-# C = Septage (residential, septage)
-# If multiple categories, union all mapped types
+# C = Septage & Holding Tank Waste (residential, septage)
 CATEGORY_SERVICE_MAP: dict[str, list[str]] = {
     "A": ["roll_off", "industrial"],
     "B": ["residential", "commercial"],
     "C": ["residential", "septage"],
 }
 
-# Lines to unconditionally skip
+CATEGORY_DESCRIPTIONS: dict[str, str] = {
+    "A": "Special/C&D Waste",
+    "B": "Municipal Solid Waste",
+    "C": "Septage & Holding Tank Waste",
+}
+
+# Lines to unconditionally skip (headers, footers, legend lines)
 SKIP_PATTERNS = re.compile(
     r"maine\.gov|page \d|printed|report date|non-haz|active transporter|"
-    r"department of environmental|^\s*-+\s*$",
+    r"department of environmental|^\s*-+\s*$|"
+    r"category [a-c] is|category [a-c]:|company name|city or town|telephone",
     re.IGNORECASE,
+)
+
+# Right-anchored regex for a full data record.
+# Groups:
+#   1 = company name
+#   2 = address
+#   3 = city / town
+#   4 = state code  (ME, NH, MA, etc.)
+#   5 = area code   (3 digits)
+#   6 = phone rest  (NNN-NNNN or similar)
+#   7 = category codes (e.g. "A", "A B", "A B C")
+#   8 = expiry date  (M/D/YYYY or MM/DD/YYYY)
+RECORD_RE = re.compile(
+    r"^(.*?)\s{2,}(.*?)\s{2,}(.*?)\s{2,}"
+    r"(ME|NH|MA|NY|NJ|CT|VT|NC|IN|PA)\s+"
+    r"\((\d{3})\)\s*([\d\-]+)\s+"
+    r"([A-C\s]*?)\s+"
+    r"(\d{1,2}/\d{1,2}/\d{4})\s*$"
 )
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -90,46 +115,37 @@ def normalize_name(name: str) -> str:
     return re.sub(r"\s+", " ", name).strip()
 
 
-def clean_phone(raw: str) -> str | None:
-    if not raw:
+def parse_expiry(raw: str) -> str | None:
+    """Convert M/D/YYYY or MM/DD/YYYY to YYYY-MM-DD."""
+    try:
+        return datetime.strptime(raw.strip(), "%m/%d/%Y").strftime("%Y-%m-%d")
+    except ValueError:
         return None
-    digits = re.sub(r"\D", "", raw)
-    if len(digits) == 10:
-        return f"{digits[0:3]}-{digits[3:6]}-{digits[6:10]}"
-    if len(digits) == 11 and digits[0] == "1":
-        return f"{digits[1:4]}-{digits[4:7]}-{digits[7:11]}"
-    trimmed = raw.strip()
-    return trimmed if trimmed else None
 
 
-def detect_column_offsets(header_line: str) -> list[int]:
-    """Return the character position where each column header token starts."""
-    offsets: list[int] = []
-    in_word = False
-    for i, ch in enumerate(header_line):
-        if ch != " " and not in_word:
-            offsets.append(i)
-            in_word = True
-        elif ch == " ":
-            in_word = False
-    return offsets
+def parse_categories(raw: str) -> list[str]:
+    """Extract unique sorted category codes (A, B, C) from a raw field."""
+    return sorted(set(re.findall(r"\b([A-C])\b", raw.upper())))
 
 
-def split_fixed_width(line: str, offsets: list[int]) -> list[str]:
-    """Slice a line into fields at the given character offsets."""
-    fields = []
-    for i, start in enumerate(offsets):
-        end = offsets[i + 1] if i + 1 < len(offsets) else len(line)
-        fields.append(line[start:end].strip())
-    return fields
+def categories_to_service_types(codes: list[str]) -> list[str]:
+    """Map ME waste category codes to service_types, deduplicating."""
+    result: list[str] = []
+    seen: set[str] = set()
+    for code in codes:
+        for stype in CATEGORY_SERVICE_MAP.get(code, []):
+            if stype not in seen:
+                result.append(stype)
+                seen.add(stype)
+    return result if result else ["residential", "commercial"]
 
 
 # ── Step 1: Scan data page ─────────────────────────────────────────────────────
 
 def scan_data_page() -> list[str]:
-    """Fetch the ME DEP data page and return all transporter-related links."""
+    """Fetch the ME DEP data page and return transporter-related PDF links."""
     print(f"\nScanning {DATA_PAGE_URL} for transporter links...")
-    found = []
+    found: list[str] = []
     try:
         resp = requests.get(DATA_PAGE_URL, headers=HEADERS, timeout=30)
         resp.raise_for_status()
@@ -148,7 +164,6 @@ def scan_data_page() -> list[str]:
                 print(f"  Found link: {full_url}  [{text}]")
     except Exception as exc:
         print(f"  Warning: could not fetch data page: {exc}")
-
     if not found:
         print("  No transporter-related links found on data page.")
     return found
@@ -182,11 +197,11 @@ def find_pdf(extra_urls: list[str]) -> tuple[str, bytes] | tuple[None, None]:
     return None, None
 
 
-# ── Step 3: Extract text and diagnose ─────────────────────────────────────────
+# ── Step 3: Extract text ───────────────────────────────────────────────────────
 
-def extract_all_text(pdf_bytes: bytes) -> tuple[list[str], str]:
+def extract_all_lines(pdf_bytes: bytes) -> tuple[list[str], str]:
     """
-    Extract text from all pages using layout=True to preserve fixed-width spacing.
+    Extract text from all pages using layout=True to preserve column spacing.
     Returns (all_lines, page1_full_text).
     """
     all_lines: list[str] = []
@@ -196,7 +211,6 @@ def extract_all_text(pdf_bytes: bytes) -> tuple[list[str], str]:
         print(f"\n  PDF pages: {len(pdf.pages)}")
 
         for page_num, page in enumerate(pdf.pages, start=1):
-            # layout=True preserves horizontal spacing for fixed-width text
             try:
                 text = page.extract_text(layout=True)
             except TypeError:
@@ -216,246 +230,97 @@ def extract_all_text(pdf_bytes: bytes) -> tuple[list[str], str]:
     return all_lines, page1_text
 
 
-# ── Step 4: Parse fixed-width lines ───────────────────────────────────────────
+# ── Step 4: Parse records using right-anchored regex ──────────────────────────
 
-def parse_lines(
-    all_lines: list[str],
-) -> tuple[list[list[str]], list[str] | None, list[int] | None]:
+def parse_records(all_lines: list[str]) -> list[dict]:
     """
-    Three-strategy parser for fixed-width text:
-      A) Split on 2+ consecutive spaces
-      B) pandas read_fwf() with auto-detected widths
-      C) Positional slice at detected column offsets
+    Parse ME DEP transporter records from fixed-width PDF lines.
 
-    Returns (records, col_names, col_offsets).
+    Each data line ends with:   STATE  (NNN) NNN-NNNN  CAT  MM/DD/YYYY
+    Lines that don't match this pattern are treated as name continuations.
     """
-    col_names: list[str] | None = None
-    col_offsets: list[int] | None = None
-    header_line: str = ""
-    data_lines: list[str] = []
+    parsed:             list[dict] = []
+    pending:            dict | None = None  # record being built (may get continuation)
+    matched_count       = 0
+    continuation_count  = 0
+    skipped_count       = 0
 
-    # ── Pass 1: separate header from data lines ───────────────────────────────
     for line in all_lines:
-        if not line.strip():
-            continue
-        if SKIP_PATTERNS.search(line.strip()):
-            continue
-
-        if col_names is None and HEADER_WORDS.search(line):
-            # Looks like the header row
-            header_line = line
-            parts = re.split(r"  +", line.strip())
-            parts = [p.strip() for p in parts if p.strip()]
-            if len(parts) >= 2:
-                col_names = parts
-                col_offsets = detect_column_offsets(line)
-                print(f"\n{'='*60}")
-                print(f"HEADER DETECTED")
-                print(f"{'='*60}")
-                print(f"  Raw header line : {repr(line)}")
-                print(f"  Col names       : {col_names}")
-                print(f"  Col offsets     : {col_offsets}")
-                # Print a visual ruler showing exact character positions
-                ruler_tens = "".join(str(i // 10) if i % 10 == 0 else " " for i in range(len(line) + 10))
-                ruler_ones = "".join(str(i % 10) for i in range(len(line) + 10))
-                print(f"\n  Position ruler:")
-                print(f"    {ruler_tens}")
-                print(f"    {ruler_ones}")
-                print(f"    {line}")
-                # Per-column offset table
-                print(f"\n  Column positions:")
-                for i, (name, offset) in enumerate(zip(col_names, col_offsets)):
-                    end = col_offsets[i + 1] if i + 1 < len(col_offsets) else len(line)
-                    print(f"    col[{i}] offset={offset:3d}–{end:3d}  name={name!r}")
-                print(f"{'='*60}\n")
-            continue
-
-        data_lines.append(line)
-
-    # ── Diagnostic: first 10 data lines with line numbers ─────────────────────
-    print(f"\n--- DIAGNOSTIC ---")
-    print(f"  Total data lines after header filter: {len(data_lines)}")
-    print(f"  First 10 raw lines (with line numbers):")
-    for i, line in enumerate(data_lines[:10]):
-        print(f"    [{i:02d}] {repr(line)}")
-    print(f"--- END DIAGNOSTIC ---\n")
-
-    # ── Strategy A: split on 2+ spaces ────────────────────────────────────────
-    records_a: list[list[str]] = []
-    for line in data_lines:
-        parts = re.split(r"  +", line.strip())
-        parts = [p.strip() for p in parts if p.strip()]
-        if len(parts) >= 2:
-            records_a.append(parts)
-
-    if records_a:
-        print(f"  Strategy A (2-space split): {len(records_a)} rows parsed")
-        print(f"  Strategy A first 3 rows:")
-        for row in records_a[:3]:
-            print(f"    {row}")
-        return records_a, col_names, col_offsets
-
-    print(f"  Strategy A yielded 0 rows — trying Strategy B (pandas read_fwf)")
-
-    # ── Strategy B: pandas read_fwf auto-detect ───────────────────────────────
-    try:
-        text_block = "\n".join(data_lines)
-        df = pd.read_fwf(
-            io.StringIO(text_block),
-            header=None,
-            dtype=str,
-        )
-        df = df.dropna(how="all")
-        records_b = [
-            [str(v).strip() for v in row if str(v).strip() and str(v) != "nan"]
-            for _, row in df.iterrows()
-        ]
-        records_b = [r for r in records_b if len(r) >= 1]
-        if records_b:
-            print(f"  Strategy B (pandas fwf): {len(records_b)} rows parsed")
-            print(f"  Strategy B first 3 rows:")
-            for row in records_b[:3]:
-                print(f"    {row}")
-            return records_b, col_names, col_offsets
-    except Exception as exc:
-        print(f"  Strategy B failed: {exc}")
-
-    print(f"  Strategy B yielded 0 rows — trying Strategy C (column offsets)")
-
-    # ── Strategy C: slice at detected column offsets ──────────────────────────
-    records_c: list[list[str]] = []
-    if col_offsets and len(col_offsets) >= 2:
-        for line in data_lines:
-            fields = split_fixed_width(line, col_offsets)
-            fields = [f.strip() for f in fields if f.strip()]
-            if len(fields) >= 1:
-                records_c.append(fields)
-        if records_c:
-            print(f"  Strategy C (col offsets): {len(records_c)} rows parsed")
-            print(f"  Strategy C first 3 rows:")
-            for row in records_c[:3]:
-                print(f"    {row}")
-            return records_c, col_names, col_offsets
-
-    # ── Last resort: import name-only from any non-blank line ─────────────────
-    print(f"  All strategies yielded 0 usable rows.")
-    print(f"  Falling back to name-only import from non-blank lines.")
-    records_fallback: list[list[str]] = []
-    for line in data_lines:
         stripped = line.strip()
-        if stripped and len(stripped) >= 3:
-            records_fallback.append([stripped])
-    print(f"  Name-only fallback: {len(records_fallback)} lines")
-    return records_fallback, col_names, col_offsets
 
-
-# ── Step 5: Map parsed rows to schema ─────────────────────────────────────────
-
-def map_records(
-    raw_rows: list[list[str]],
-    col_names: list[str] | None,
-) -> list[dict]:
-    """
-    Map parsed rows to the organization schema.
-    Uses column-name lookup when headers were detected, else positional.
-
-    Expected ME DEP column order (typical):
-        License#  Company/Name  Address  City  ST  Zip  Phone
-    """
-    mapped = []
-
-    col_idx: dict[str, int] = {}
-    if col_names:
-        for i, name in enumerate(col_names):
-            col_idx[name.lower()] = i
-
-    def get(row: list[str], *keys: str) -> str:
-        for key in keys:
-            for col_key, idx in col_idx.items():
-                if key.lower() in col_key:
-                    if idx < len(row):
-                        return row[idx]
-        return ""
-
-    def parse_categories(raw: str) -> list[str]:
-        """Extract uppercase category codes (A, B, C) from a raw field value."""
-        return [c for c in re.findall(r"\b([A-C])\b", raw.upper())]
-
-    def categories_to_service_types(codes: list[str]) -> list[str]:
-        """Map ME waste category codes to service_types, deduplicating."""
-        result: list[str] = []
-        seen: set[str] = set()
-        for code in codes:
-            for stype in CATEGORY_SERVICE_MAP.get(code, []):
-                if stype not in seen:
-                    result.append(stype)
-                    seen.add(stype)
-        return result if result else ["residential", "commercial"]
-
-    for row in raw_rows:
-        if not row:
+        # Skip blank and header/footer/legend lines
+        if not stripped:
+            continue
+        if SKIP_PATTERNS.search(stripped):
+            skipped_count += 1
             continue
 
-        if col_names and len(row) >= 2:
-            license_num = get(row, "license", "permit", "cert", "number", "id")
-            name        = get(row, "company", "facility", "name", "business")
-            address     = get(row, "address", "addr", "street")
-            city        = get(row, "city", "town")
-            state       = get(row, "state", "st") or "ME"
-            zip_code    = get(row, "zip", "postal")
-            phone       = get(row, "phone", "tel")
-            category    = get(row, "category", "type", "class", "cat")
-        elif len(row) >= 2:
-            # Positional: License#  Name  Address  City  ST  Zip  Phone  [Category]
-            license_num = row[0]
-            name        = row[1]
-            address     = row[2] if len(row) > 2 else ""
-            city        = row[3] if len(row) > 3 else ""
-            state       = row[4] if len(row) > 4 else "ME"
-            zip_code    = row[5] if len(row) > 5 else ""
-            phone       = row[6] if len(row) > 6 else ""
-            category    = row[7] if len(row) > 7 else ""
+        m = RECORD_RE.match(line)
+
+        if m:
+            # Flush previous pending record before starting a new one
+            if pending is not None:
+                parsed.append(pending)
+
+            name       = m.group(1).strip()
+            address    = m.group(2).strip()
+            city       = m.group(3).strip()
+            state      = m.group(4).strip()
+            area_code  = m.group(5).strip()
+            phone_rest = m.group(6).strip()
+            cat_raw    = m.group(7).strip()
+            expiry_raw = m.group(8).strip()
+
+            phone      = f"({area_code}) {phone_rest}" if area_code else None
+            expiry     = parse_expiry(expiry_raw)
+            cat_codes  = parse_categories(cat_raw)
+
+            # Build license_metadata
+            license_metadata: dict[str, str] = {}
+            if cat_codes:
+                license_metadata["me_waste_category"] = " ".join(cat_codes)
+                descriptions = [
+                    CATEGORY_DESCRIPTIONS[c]
+                    for c in cat_codes
+                    if c in CATEGORY_DESCRIPTIONS
+                ]
+                if descriptions:
+                    license_metadata["me_category_descriptions"] = ", ".join(descriptions)
+            if expiry:
+                license_metadata["me_license_expiry"] = expiry
+
+            pending = {
+                "name":             name,
+                "address":          address or None,
+                "city":             city or None,
+                "state":            state,
+                "phone":            phone,
+                "zip":              None,
+                "license_number":   None,
+                "license_expiry":   expiry,
+                "service_types":    categories_to_service_types(cat_codes),
+                "license_metadata": license_metadata,
+            }
+            matched_count += 1
+
         else:
-            # Name-only fallback (Strategy C last resort)
-            license_num = ""
-            name        = row[0]
-            address     = ""
-            city        = ""
-            state       = "ME"
-            zip_code    = ""
-            phone       = ""
-            category    = ""
+            # Line didn't match — treat as a company-name continuation
+            if pending is not None and len(stripped) >= 2:
+                pending["name"] = pending["name"] + " " + stripped
+                continuation_count += 1
+            else:
+                skipped_count += 1
 
-        name = name.strip()
-        if not name or len(name) < 2:
-            continue
+    # Don't forget the last pending record
+    if pending is not None:
+        parsed.append(pending)
 
-        # Skip lines that are obviously not company names
-        if re.match(r"^\d+$", name):
-            continue
+    print(f"\n  Regex-matched lines  : {matched_count}")
+    print(f"  Continuation lines   : {continuation_count}")
+    print(f"  Skipped lines        : {skipped_count}")
+    print(f"  Total records parsed : {len(parsed)}")
 
-        # Parse waste category codes and map to service types
-        cat_codes = parse_categories(category)
-        service_types = categories_to_service_types(cat_codes)
-
-        # Build license_metadata with ME-specific fields
-        license_metadata: dict[str, str] = {}
-        if cat_codes:
-            license_metadata["me_waste_category"] = ",".join(sorted(cat_codes))
-
-        mapped.append({
-            "name": name,
-            "address": address.strip() or None,
-            "city": city.strip() or None,
-            "state": (state.strip().upper() or "ME")[:2],
-            "zip": zip_code.strip() or None,
-            "phone": clean_phone(phone),
-            "license_number": license_num.strip() or None,
-            "service_types": service_types,
-            "license_metadata": license_metadata,
-        })
-
-    return mapped
+    return parsed
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
@@ -464,7 +329,7 @@ def main() -> None:
     print("=== WasteDirectory — Maine DEP Non-Haz Transporter Importer ===")
     print(datetime.utcnow().isoformat())
 
-    # ── 1. Scan data page (supplementary) ─────────────────────────────────────
+    # ── 1. Scan data page (supplementary link discovery) ──────────────────────
     extra_urls = scan_data_page()
 
     # ── 2. Find and download PDF ──────────────────────────────────────────────
@@ -472,7 +337,7 @@ def main() -> None:
     pdf_url, pdf_bytes = find_pdf(extra_urls)
 
     if not pdf_bytes:
-        print("\n=== DIAGNOSTIC: No PDF found ===")
+        print("\n=== No PDF found ===")
         print("Tried the following URLs:")
         for url in list(dict.fromkeys(DIRECT_URLS + extra_urls)):
             print(f"  {url}")
@@ -484,42 +349,48 @@ def main() -> None:
 
     print(f"\nUsing PDF from: {pdf_url}")
 
-    # ── 3. Extract text (layout=True preserves fixed-width spacing) ───────────
+    # ── 3. Extract all text lines from the PDF ────────────────────────────────
     try:
-        all_lines, page1_text = extract_all_text(pdf_bytes)
+        all_lines, page1_text = extract_all_lines(pdf_bytes)
     except Exception as exc:
         print(f"\nFailed to extract text from PDF: {exc}", file=sys.stderr)
         sys.exit(1)
 
-    # ── 3b. Print full page 1 with line numbers ───────────────────────────────
-    page1_lines = page1_text.split("\n")
-    print(f"\n{'='*60}")
-    print(f"FULL PAGE 1 RAW TEXT — {len(page1_lines)} lines, {len(page1_text)} chars")
-    print(f"(line numbers shown on left; spaces preserved exactly)")
-    print(f"{'='*60}")
-    for lineno, line in enumerate(page1_lines, start=1):
-        print(f"  {lineno:4d} | {line}")
-    print(f"{'='*60}\n")
+    print(f"  Total lines extracted: {len(all_lines)}")
 
-    # ── 4. Parse fixed-width lines (detects header + column offsets) ──────────
-    raw_rows, col_names, col_offsets = parse_lines(all_lines)
-    print(f"\n  Total rows after parsing: {len(raw_rows)}")
+    # ── 4. Parse records with right-anchored regex ────────────────────────────
+    mapped = parse_records(all_lines)
+
+    if not mapped:
+        print("\nNo records parsed — check PDF structure.")
+        print("\nFirst 30 lines of page 1 (for debugging):")
+        for i, line in enumerate(page1_text.split("\n")[:30], start=1):
+            print(f"  {i:4d} | {repr(line)}")
+        sys.exit(0)
+
+    # ── 5. Print first 10 parsed records as verification ─────────────────────
+    print(f"\n{'='*72}")
+    print("FIRST 10 PARSED RECORDS — verify before inserting")
+    print(f"{'='*72}")
+    header = f"{'Name':<38} {'City':<18} {'St'} {'Phone':<15} {'Cat':<8} Expiry"
+    print(header)
+    print("-" * 72)
+    for rec in mapped[:10]:
+        cats = rec["license_metadata"].get("me_waste_category", "")
+        print(
+            f"{rec['name'][:38]:<38} "
+            f"{(rec['city'] or '')[:18]:<18} "
+            f"{rec['state']}  "
+            f"{(rec['phone'] or ''):<15} "
+            f"{cats:<8} "
+            f"{rec['license_expiry'] or ''}"
+        )
+    print(f"{'='*72}\n")
 
     # ── DIAGNOSTIC MODE: exit before any database operations ──────────────────
     if DIAGNOSTIC_ONLY:
-        print("\n" + "="*60)
         print("DIAGNOSTIC_ONLY = True — exiting before DB operations.")
-        print("Review the raw text and header offsets above, then set")
-        print("DIAGNOSTIC_ONLY = False to enable actual imports.")
-        print("="*60)
-        sys.exit(0)
-
-    # ── 5. Map to schema ──────────────────────────────────────────────────────
-    mapped = map_records(raw_rows, col_names)
-    print(f"  Records mapped to schema: {len(mapped)}")
-
-    if not mapped:
-        print("\nNo records mapped — review the PAGE 1 RAW TEXT and DIAGNOSTIC output above.")
+        print("Review the parsed records above, then set DIAGNOSTIC_ONLY = False.")
         sys.exit(0)
 
     if len(mapped) > SAFE_MAX:
@@ -527,7 +398,7 @@ def main() -> None:
         sys.exit(1)
 
     # ── 6. Connect to Supabase ────────────────────────────────────────────────
-    supabase_url = os.environ.get("SUPABASE_URL")
+    supabase_url     = os.environ.get("SUPABASE_URL")
     service_role_key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
     if not supabase_url or not service_role_key:
         print(
@@ -543,13 +414,13 @@ def main() -> None:
     existing_name_map: dict[str, dict] = {}
     existing_slug_set: set[str] = set()
     page_size = 1000
-    offset = 0
+    db_offset = 0
 
     while True:
         result = (
             supabase.table("organizations")
             .select("id, name, slug, service_area_states")
-            .range(offset, offset + page_size - 1)
+            .range(db_offset, db_offset + page_size - 1)
             .execute()
         )
         for org in result.data:
@@ -560,20 +431,20 @@ def main() -> None:
                 existing_slug_set.add(org["slug"])
         if len(result.data) < page_size:
             break
-        offset += page_size
+        db_offset += page_size
 
     print(f"  Loaded {len(existing_name_map)} existing organizations")
 
     # ── 8. Classify records ───────────────────────────────────────────────────
-    to_update:          list[tuple[dict, dict]] = []  # (existing_org, record) — name-matched
-    slug_matched_updates: list[tuple[str, dict]] = []  # (slug, record) — slug-matched only
-    to_insert:          list[dict] = []
-    seen_slugs:         set[str]   = set()
+    to_update:           list[tuple[dict, dict]] = []  # (existing_org, record) — name-matched
+    slug_matched_updates: list[tuple[str, dict]] = []  # (slug, record) — slug-only match
+    to_insert:           list[dict] = []
+    seen_slugs:          set[str]   = set()
     skipped_no_name = 0
 
     for record in mapped:
         name = record["name"]
-        if not name:
+        if not name or len(name) < 2:
             skipped_no_name += 1
             continue
 
@@ -581,7 +452,7 @@ def main() -> None:
         existing = existing_name_map.get(name_key)
 
         if existing:
-            # Always update to refresh service_types and license_metadata
+            # Name match → always update metadata
             to_update.append((existing, record))
             continue
 
@@ -590,8 +461,7 @@ def main() -> None:
             skipped_no_name += 1
             continue
 
-        # If the natural slug is already in DB (but name didn't match), update it
-        # rather than creating a duplicate with a -N suffix.
+        # Slug match (name didn't match) → update metadata, don't create duplicate
         if base_slug in existing_slug_set:
             slug_matched_updates.append((base_slug, record))
             continue
@@ -605,21 +475,22 @@ def main() -> None:
         seen_slugs.add(slug)
 
         to_insert.append({
-            "name": name,
-            "slug": slug,
-            "org_type": "hauler",
-            "phone": record["phone"],
-            "address": record["address"],
-            "city": record["city"],
-            "state": record["state"],
-            "zip": record["zip"],
-            "license_number": record["license_number"],
-            "service_types": record["service_types"],
-            "license_metadata": record["license_metadata"],
+            "name":                name,
+            "slug":                slug,
+            "org_type":            "hauler",
+            "phone":               record["phone"],
+            "address":             record["address"],
+            "city":                record["city"],
+            "state":               record["state"],
+            "zip":                 record["zip"],
+            "license_number":      record["license_number"],
+            "license_expiry":      record["license_expiry"],
+            "service_types":       record["service_types"],
+            "license_metadata":    record["license_metadata"],
             "service_area_states": SERVICE_AREA_STATES,
-            "verified": True,
-            "active": True,
-            "data_source": DATA_SOURCE,
+            "verified":            True,
+            "active":              True,
+            "data_source":         DATA_SOURCE,
         })
 
     print(f"\n  Name-matched (will update):      {len(to_update)}")
@@ -628,52 +499,58 @@ def main() -> None:
     if skipped_no_name:
         print(f"  Skipped (no name):               {skipped_no_name}")
 
-    # ── 9. Update existing orgs ───────────────────────────────────────────────
+    # ── 9. Update name-matched existing orgs ──────────────────────────────────
     update_errors = 0
     for existing, record in to_update:
         current_states = existing.get("service_area_states") or []
         update_payload: dict = {
-            "service_types": record["service_types"],
+            "service_types":    record["service_types"],
             "license_metadata": record["license_metadata"],
+            "license_expiry":   record["license_expiry"],
         }
         if "ME" not in current_states:
             update_payload["service_area_states"] = list(current_states) + ["ME"]
         try:
             supabase.table("organizations").update(update_payload).eq("id", existing["id"]).execute()
-            print(f"  ✓ Updated {existing['slug']} — service_types={record['service_types']}")
         except Exception as exc:
             print(f"  ✗ Update failed for {existing['slug']}: {exc}")
             update_errors += 1
 
-    # ── 9b. Update slug-matched existing orgs (name didn't match, slug did) ─────
+    if to_update:
+        print(f"  ✓ Updated {len(to_update) - update_errors} name-matched records")
+
+    # ── 9b. Update slug-matched orgs ──────────────────────────────────────────
     slug_update_errors = 0
     slug_updated = 0
-
     for slug, record in slug_matched_updates:
         try:
             supabase.table("organizations").update({
                 "service_types":    record["service_types"],
                 "license_metadata": record["license_metadata"],
+                "license_expiry":   record["license_expiry"],
             }).eq("slug", slug).execute()
             slug_updated += 1
-            print(f"  ✓ Slug-updated {slug} — service_types={record['service_types']}")
         except Exception as exc:
             print(f"  ✗ Slug update failed for {slug}: {exc}")
             slug_update_errors += 1
 
-    # ── 10. Insert new records ────────────────────────────────────────────────
-    insert_errors = 0
+    if slug_matched_updates:
+        print(f"  ✓ Updated {slug_updated} slug-matched records")
+
+    # ── 10. Insert new records ─────────────────────────────────────────────────
+    insert_errors  = 0
     newly_inserted = 0
 
     if to_insert:
+        # Final slug safety check against DB
         slugs_to_check = [o["slug"] for o in to_insert]
-        result = (
+        check_result = (
             supabase.table("organizations")
             .select("slug")
             .in_("slug", slugs_to_check)
             .execute()
         )
-        db_slugs = {row["slug"] for row in result.data}
+        db_slugs = {row["slug"] for row in check_result.data}
         new_orgs = [o for o in to_insert if o["slug"] not in db_slugs]
 
         if db_slugs:
@@ -681,7 +558,7 @@ def main() -> None:
         print(f"  Net new to insert after slug dedup: {len(new_orgs)}")
 
         for i in range(0, len(new_orgs), BATCH_SIZE):
-            batch = new_orgs[i : i + BATCH_SIZE]
+            batch     = new_orgs[i : i + BATCH_SIZE]
             batch_num = i // BATCH_SIZE + 1
             try:
                 supabase.table("organizations").insert(batch).execute()
@@ -694,9 +571,8 @@ def main() -> None:
     # ── 11. Summary ───────────────────────────────────────────────────────────
     total_errors = update_errors + slug_update_errors + insert_errors
     print("\n=== Summary ===")
-    print(f"  Total lines parsed   : {len(raw_rows)}")
-    print(f"  Mapped to schema     : {len(mapped)}")
-    print(f"  Name-matched/updated : {len(to_update)}")
+    print(f"  Total records parsed : {len(mapped)}")
+    print(f"  Name-matched/updated : {len(to_update) - update_errors}")
     print(f"  Slug-matched/updated : {slug_updated}")
     print(f"  Newly inserted       : {newly_inserted}")
     print(f"  Errors               : {total_errors}")
