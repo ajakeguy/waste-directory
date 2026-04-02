@@ -231,11 +231,43 @@ def extract_all_lines(pdf_bytes: bytes) -> tuple[list[str], str]:
 
 # ── Step 4: Parse records using phone-pattern anchor ──────────────────────────
 
+def split_name_address(text: str) -> tuple[str, str, str]:
+    """
+    Given the left portion of a line (name + address + city concatenated
+    with no reliable double-space separator), attempt to split at the first
+    street-number boundary: a run of whitespace followed by one or more
+    digits and then a non-digit character that appears mid-string.
+
+    e.g. 'A PLUS RECYCLING & RUBBISH REMOVAL 12 MEDOMAK MOBILE HOME PARK WALDOBORO'
+         → name='A PLUS RECYCLING & RUBBISH REMOVAL'
+           rest='12 MEDOMAK MOBILE HOME PARK WALDOBORO'
+
+    The remainder is itself split on 2+ spaces to separate address from city.
+    If no street-number boundary is found, the whole text is treated as name.
+    """
+    # Match the FIRST occurrence of whitespace + digits + space mid-string.
+    # Require at least one character before the match so we don't split at pos 0.
+    num_match = re.search(r"(?<=\S)\s+(\d+\s+\S)", text)
+    if num_match:
+        name = text[: num_match.start()].strip()
+        rest = text[num_match.start() :].strip()
+        rest_parts = [p.strip() for p in re.split(r"\s{2,}", rest) if p.strip()]
+        address = rest_parts[0] if rest_parts else rest
+        city    = rest_parts[1] if len(rest_parts) > 1 else ""
+        return name, address, city
+
+    return text.strip(), "", ""
+
+
 def parse_line(line: str) -> dict | None:
     """
     Parse a single data line by locating the structured right-side anchor
     (state + phone + categories + expiry) and splitting everything before
     it on 2+ spaces to get name / address / city.
+
+    When only one part is returned by the 2+-space split (i.e. name and
+    address run together with only single spaces), fall back to
+    split_name_address() which splits at the first street-number boundary.
 
     Returns None if the line has no phone pattern (continuation line).
     """
@@ -257,9 +289,8 @@ def parse_line(line: str) -> dict | None:
         address = parts[1]
         city    = ""
     elif len(parts) == 1:
-        name    = parts[0]
-        address = ""
-        city    = ""
+        # No double-space separator found — try splitting on street-number boundary
+        name, address, city = split_name_address(parts[0])
     else:
         return None  # nothing useful before the anchor
 
