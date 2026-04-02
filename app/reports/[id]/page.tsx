@@ -71,12 +71,7 @@ export default async function ReportViewPage({ params }: Props) {
             </Button>
           </Link>
 
-          <DownloadPdfButton
-            reportName={report.report_name}
-            customerName={report.customer_name}
-            periodStart={report.period_start}
-            periodEnd={report.period_end}
-          />
+          <DownloadPdfButton reportId={id} />
 
           <div className="pt-2 border-t border-gray-100">
             <DeleteReportButton reportId={id} />

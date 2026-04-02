@@ -57,11 +57,15 @@ type Props = {
   userId: string;
   /** When provided, the form is in edit mode. */
   report?: DiversionReport;
+  /** URL of the most recent logo the user has uploaded across any report. */
+  previousLogoUrl?: string | null;
+  /** Hauler name from the most recent report, used as a hint. */
+  previousHaulerName?: string | null;
 };
 
 // ── Component ─────────────────────────────────────────────────────────────────
 
-export function ReportForm({ userId, report }: Props) {
+export function ReportForm({ userId, report, previousLogoUrl, previousHaulerName }: Props) {
   const router = useRouter();
   const logoInputRef = useRef<HTMLInputElement>(null);
   const isEdit = !!report;
@@ -72,10 +76,12 @@ export function ReportForm({ userId, report }: Props) {
   const [periodEnd,    setPeriodEnd]    = useState(report?.period_end     ?? "");
 
   // ── Section 2: Hauler Info
-  const [haulerName,    setHaulerName]   = useState(report?.hauler_name    ?? "");
+  const [haulerName,    setHaulerName]   = useState(report?.hauler_name    ?? previousHaulerName ?? "");
   const [haulerLogoUrl, setHaulerLogoUrl]= useState(report?.hauler_logo_url ?? "");
   const [logoUploading, setLogoUploading]= useState(false);
   const [logoPreview,   setLogoPreview]  = useState(report?.hauler_logo_url ?? "");
+  // Offer to reuse the previous logo only in create mode when one exists
+  const showPreviousLogoOffer = !isEdit && !!previousLogoUrl && !logoPreview;
 
   // ── Section 3: Customer Info
   const [customerName,    setCustomerName]    = useState(report?.customer_name    ?? "");
@@ -261,6 +267,33 @@ export function ReportForm({ userId, report }: Props) {
             <label className="block text-sm font-medium text-gray-700 mb-1">
               Company Logo
             </label>
+
+            {/* ── Offer to reuse previous logo (create mode only) ── */}
+            {showPreviousLogoOffer && (
+              <div className="mb-3 flex items-center gap-3 rounded-lg border border-[#2D6A4F]/20 bg-[#2D6A4F]/5 px-4 py-3">
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img
+                  src={previousLogoUrl!}
+                  alt="Previous logo"
+                  className="h-10 w-auto object-contain rounded bg-white border border-gray-100 p-1 shrink-0"
+                />
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-medium text-gray-800">Use logo from previous report?</p>
+                  <p className="text-xs text-gray-500 truncate">{previousHaulerName}</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setHaulerLogoUrl(previousLogoUrl!);
+                    setLogoPreview(previousLogoUrl!);
+                  }}
+                  className="shrink-0 inline-flex h-8 items-center px-3 rounded-lg bg-[#2D6A4F] text-white text-xs font-medium hover:bg-[#245a42] transition-colors"
+                >
+                  Use this logo
+                </button>
+              </div>
+            )}
+
             <div
               onDragOver={(e) => e.preventDefault()}
               onDrop={handleLogoDrop}
