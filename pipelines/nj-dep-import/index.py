@@ -156,6 +156,14 @@ def parse_excel(path: str) -> pd.DataFrame:
     return df
 
 
+def clean_id(raw: object) -> str | None:
+    """Strip whitespace and return None for blank / nan values."""
+    if raw is None:
+        return None
+    s = str(raw).strip()
+    return None if s.lower() in {"nan", "none", ""} else s
+
+
 def map_records(df: pd.DataFrame) -> list[dict]:
     """Map DataFrame rows to organization insert dicts."""
     records = []
@@ -176,21 +184,42 @@ def map_records(df: pd.DataFrame) -> list[dict]:
         state = str(row.get("State", "") or "").strip().upper()
         state = state if state and state not in {"NAN", "NONE", ""} else "NJ"
 
-        zip_code = clean_zip(row.get("Zip Code"))
+        zip_code    = clean_zip(row.get("Zip Code"))
         license_num = format_license(row.get("A-901 Bill #"))
 
+        # Build license_metadata with all three NJ ID fields
+        njems_pi   = clean_id(row.get("NJEMS PI #"))
+        dep_num    = clean_id(row.get("DEP #"))
+        a901_bill  = clean_id(row.get("A-901 Bill #"))
+        county     = clean_id(row.get("County"))
+        site_city  = clean_id(row.get("Site City Name"))
+
+        license_metadata: dict[str, str] = {}
+        if njems_pi:
+            license_metadata["nj_njems_pi"]   = njems_pi
+        if dep_num:
+            license_metadata["nj_dep_number"] = dep_num
+        if a901_bill:
+            license_metadata["nj_a901_bill"]  = a901_bill
+        if county:
+            license_metadata["nj_county"]     = county
+        if site_city:
+            license_metadata["nj_site_city"]  = site_city
+
         rec = {
-            "name": name,
-            "address": str(row.get("Street Address", "") or "").strip() or None,
-            "city": city,
-            "state": state,
-            "zip": zip_code,
-            "org_type": "hauler",
-            "service_types": ["commercial", "residential"],
+            "name":                name,
+            "address":             str(row.get("Street Address", "") or "").strip() or None,
+            "city":                city,
+            "state":               state,
+            "zip":                 zip_code,
+            "org_type":            "hauler",
+            "license_number":      license_num,
+            "license_metadata":    license_metadata,
+            "service_types":       ["commercial", "residential"],
             "service_area_states": ["NJ"],
-            "data_source": f"{DATA_SOURCE}" + (f":{license_num}" if license_num else ""),
-            "verified": True,
-            "active": True,
+            "data_source":         DATA_SOURCE,
+            "verified":            True,
+            "active":              True,
         }
         # Remove None values to avoid sending nulls for unset fields
         rec = {k: v for k, v in rec.items() if v is not None or k in {"active", "verified"}}
@@ -200,43 +229,78 @@ def map_records(df: pd.DataFrame) -> list[dict]:
     print(f"  Mappable records    : {len(records):,}")
     return records
 
-# ── Insert pipeline ───────────────────────────────────────────────────────────
+# ── Insert / update pipeline ──────────────────────────────────────────────────
 
-def slug_dedup_and_insert(
+def slug_dedup_and_upsert(
     supabase: Client, records: list[dict]
-) -> tuple[int, int, int]:
-    inserted = skipped = errors = 0
+) -> tuple[int, int, int, int]:
+    """
+    Split records into new (insert) and existing (update).
+    Existing records are updated with fresh license_number + license_metadata.
+    Returns (inserted, updated, skipped_in_batch_dedup, errors).
+    """
+    inserted = updated = skipped = errors = 0
     existing_slugs = fetch_existing_slugs(supabase)
     slug_counter: dict[str, int] = {}
+
+    to_insert: list[dict] = []
+    to_update: list[dict] = []   # records whose slug already exists
 
     for rec in records:
         base = make_slug(rec["name"], rec.get("city") or "")
         if base in existing_slugs:
-            skipped += 1
+            # Slug already in DB — queue for metadata update
+            rec["slug"] = base
+            to_update.append(rec)
             continue
+        # New slug — deduplicate within this batch
         n = slug_counter.get(base, 0)
         slug = base if n == 0 else f"{base}-{n}"
         slug_counter[base] = n + 1
+        if slug in existing_slugs:
+            # Collision after numbering (edge case) — skip rather than duplicate
+            skipped += 1
+            continue
         rec["slug"] = slug
         existing_slugs.add(slug)
+        to_insert.append(rec)
 
-    to_insert = [r for r in records if "slug" in r]
-    print(f"  New records to insert: {len(to_insert):,}  (skipped {skipped} duplicates)")
+    print(f"  New records to insert : {len(to_insert):,}")
+    print(f"  Existing to update    : {len(to_update):,}")
+    if skipped:
+        print(f"  Skipped (slug clash)  : {skipped}")
 
+    # ── Insert new records ────────────────────────────────────────────────────
     for i in range(0, len(to_insert), BATCH_SIZE):
         batch = to_insert[i : i + BATCH_SIZE]
         batch_num = i // BATCH_SIZE + 1
         try:
             supabase.table("organizations").insert(batch).execute()
             inserted += len(batch)
-            print(f"  ✓ Batch {batch_num}: inserted {len(batch)}")
+            print(f"  ✓ Insert batch {batch_num}: {len(batch)} records")
         except Exception as exc:
-            print(f"  ✗ Batch {batch_num} failed: {exc}")
-            print(f"  ✗ Detail: {exc!r}")
-            print(f"  ✗ First record in failed batch: {batch[0] if batch else 'unknown'}")
+            print(f"  ✗ Insert batch {batch_num} failed: {exc!r}")
             errors += 1
 
-    return inserted, skipped, errors
+    # ── Update existing records with fresh metadata ───────────────────────────
+    for i in range(0, len(to_update), BATCH_SIZE):
+        batch = to_update[i : i + BATCH_SIZE]
+        batch_num = i // BATCH_SIZE + 1
+        batch_errors = 0
+        for rec in batch:
+            try:
+                supabase.table("organizations").update({
+                    "license_number":   rec.get("license_number"),
+                    "license_metadata": rec.get("license_metadata", {}),
+                }).eq("slug", rec["slug"]).execute()
+                updated += 1
+            except Exception as exc:
+                print(f"  ✗ Update failed for {rec['slug']}: {exc!r}")
+                batch_errors += 1
+                errors += 1
+        print(f"  ✓ Update batch {batch_num}: {len(batch) - batch_errors} updated")
+
+    return inserted, updated, skipped, errors
 
 # ── Probe mode helpers ────────────────────────────────────────────────────────
 
@@ -306,10 +370,10 @@ To use this pipeline in local file mode:
     print(f"\nParsing Excel file...")
     df = parse_excel(file_path)
 
-    # Show unique status/license values for diagnostics
-    if "A-901 Bill #" in df.columns:
-        sample = df["A-901 Bill #"].dropna().head(5).tolist()
-        print(f"  A-901 Bill # sample: {sample}")
+    # Always print full column list so we can verify all expected fields exist
+    print(f"\n  All columns ({len(df.columns)}):")
+    for col in df.columns.tolist():
+        print(f"    {col!r}")
 
     records = map_records(df)
 
@@ -322,19 +386,37 @@ To use this pipeline in local file mode:
         print("  Raise SAFE_MAX in this pipeline if the count is expected.")
         sys.exit(1)
 
-    print(f"\nInserting into Supabase...")
-    inserted, skipped, errors = slug_dedup_and_insert(supabase, records)
+    # ── Verification table — first 5 records ──────────────────────────────────
+    print(f"\n{'='*72}")
+    print("FIRST 5 RECORDS — verify license IDs before upserting")
+    print(f"{'='*72}")
+    print(f"{'Name':<35} {'City':<15} {'NJEMS PI':<10} {'DEP #':<10} {'A-901 #'}")
+    print("-" * 72)
+    for rec in records[:5]:
+        meta = rec.get("license_metadata") or {}
+        print(
+            f"{rec['name'][:35]:<35} "
+            f"{(rec.get('city') or '')[:15]:<15} "
+            f"{meta.get('nj_njems_pi', ''):<10} "
+            f"{meta.get('nj_dep_number', ''):<10} "
+            f"{meta.get('nj_a901_bill', '')}"
+        )
+    print(f"{'='*72}\n")
+
+    print(f"\nUpserting into Supabase...")
+    inserted, updated, skipped, errors = slug_dedup_and_upsert(supabase, records)
 
     print("\n" + "=" * 60)
     print("RESULTS")
     print("=" * 60)
     print(f"  Rows in file         : {len(df):,}")
     print(f"  Mappable records     : {len(records):,}")
-    print(f"  Already in DB        : {skipped:,}")
-    print(f"  Inserted             : {inserted:,}")
+    print(f"  Inserted (new)       : {inserted:,}")
+    print(f"  Updated (existing)   : {updated:,}")
+    print(f"  Skipped (slug clash) : {skipped:,}")
     print(f"  Errors               : {errors}")
 
-    if inserted == 0 and errors > 0:
+    if errors > 0 and inserted == 0 and updated == 0:
         sys.exit(1)
 
 # ── Mode: probe for online data ───────────────────────────────────────────────

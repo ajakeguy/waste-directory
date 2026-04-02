@@ -248,16 +248,29 @@ async function StateLandingPage({
 
 /** Human-readable labels for license_metadata keys. */
 const LICENSE_METADATA_LABELS: Record<string, string> = {
-  me_waste_category:  "Waste Categories (ME)",
-  bic_number:         "BIC License Number",
-  boro:               "Borough",
-  renewal:            "License Renewal Date",
-  pa_wh_id:           "PA Hauler ID",
-  pa_license_id:      "PA License ID",
-  pa_client_id:       "PA Client ID",
-  vt_permit_type:     "Permit Type",
-  vt_permit_number:   "Permit Year",
-  vt_waste_type_raw:  "Waste Type Codes",
+  // NYC BIC
+  bic_number:                 "BIC License Number",
+  boro:                       "Borough",
+  renewal:                    "License Renewal Date",
+  authorized_recycling_type:  "Authorized Recycling Type",
+  // NJ A-901
+  nj_njems_pi:                "NJEMS PI Number",
+  nj_dep_number:              "DEP Registration #",
+  nj_a901_bill:               "A-901 License #",
+  nj_county:                  "County",
+  nj_site_city:               "Site City",
+  // Maine DEP
+  me_waste_category:          "Waste Categories (ME)",
+  me_category_descriptions:   "Waste Types (ME)",
+  me_license_expiry:          "License Expiry",
+  // Pennsylvania DEP
+  pa_wh_id:                   "PA Hauler ID",
+  pa_license_id:              "PA License ID",
+  pa_client_id:               "PA Client ID",
+  // Vermont DEC
+  vt_permit_type:             "Permit Type",
+  vt_permit_number:           "Permit Year",
+  vt_waste_type_raw:          "Waste Type Codes",
 };
 
 /** Human-readable label for a contact source identifier. */
