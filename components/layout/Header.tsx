@@ -48,6 +48,12 @@ export default async function Header() {
             Marketplace
           </Link>
           <Link
+            href="/reports"
+            className="text-sm font-medium text-white/90 hover:text-white transition-colors"
+          >
+            Reports
+          </Link>
+          <Link
             href="/news"
             className="text-sm font-medium text-white/90 hover:text-white transition-colors"
           >

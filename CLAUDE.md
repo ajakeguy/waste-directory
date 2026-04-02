@@ -447,6 +447,18 @@ A public storage bucket called **`marketplace-photos`** must be created manually
    - Operation: INSERT
    - Expression: `(auth.uid() IS NOT NULL)`
 
+## Diversion Reports
+
+### Supabase Storage — Manual Setup Required
+A public storage bucket called **`report-logos`** must be created manually in the Supabase dashboard (same process as `marketplace-photos`):
+1. Go to Storage → New bucket
+2. Name: `report-logos`
+3. Enable **Public bucket** (so logo URLs are directly accessible)
+4. Add storage policy to allow authenticated uploads:
+   - Policy name: "Authenticated users can upload"
+   - Operation: INSERT
+   - Expression: `(auth.uid() IS NOT NULL)`
+
 ### Listing Expiry Cron Job (TODO)
 A GitHub Actions cron job should be created to mark expired listings:
 ```sql

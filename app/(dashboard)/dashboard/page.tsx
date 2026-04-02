@@ -2,7 +2,7 @@ import { redirect } from "next/navigation";
 import type { Metadata } from "next";
 import { createClient } from "@/lib/supabase/server";
 import { DashboardClient } from "@/components/dashboard/DashboardClient";
-import type { Organization, SavedItemWithOrg, UserList, EquipmentListing } from "@/types";
+import type { Organization, SavedItemWithOrg, UserList, EquipmentListing, DiversionReport } from "@/types";
 
 export const metadata: Metadata = {
   title: "Dashboard | WasteDirectory",
@@ -88,6 +88,19 @@ export default async function DashboardPage() {
 
   const myListings = (listingsData ?? []) as unknown as EquipmentListing[];
 
+  // Recent diversion reports (latest 5)
+  const { data: reportsData } = await supabase
+    .from("diversion_reports")
+    .select("id, report_name, customer_name, period_start, period_end, status, created_at, updated_at")
+    .eq("user_id", user.id)
+    .order("updated_at", { ascending: false })
+    .limit(5);
+
+  const recentReports = (reportsData ?? []) as unknown as Pick<
+    DiversionReport,
+    "id" | "report_name" | "customer_name" | "period_start" | "period_end" | "status" | "created_at" | "updated_at"
+  >[];
+
   return (
     <DashboardClient
       userId={user.id}
@@ -95,6 +108,7 @@ export default async function DashboardPage() {
       lists={lists}
       savedItems={savedItems}
       myListings={myListings}
+      recentReports={recentReports}
     />
   );
 }

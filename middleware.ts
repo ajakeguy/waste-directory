@@ -34,8 +34,9 @@ export async function middleware(request: NextRequest) {
     data: { user },
   } = await supabase.auth.getUser();
 
-  // Protect /dashboard — redirect unauthenticated users to /login
-  if (!user && request.nextUrl.pathname.startsWith("/dashboard")) {
+  // Protect /dashboard and /reports — redirect unauthenticated users to /login
+  const protectedPrefixes = ["/dashboard", "/reports"];
+  if (!user && protectedPrefixes.some((p) => request.nextUrl.pathname.startsWith(p))) {
     const loginUrl = request.nextUrl.clone();
     loginUrl.pathname = "/login";
     loginUrl.searchParams.set("next", request.nextUrl.pathname);
