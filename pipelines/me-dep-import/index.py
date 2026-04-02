@@ -233,24 +233,27 @@ def extract_all_lines(pdf_bytes: bytes) -> tuple[list[str], str]:
 
 def split_name_address(text: str) -> tuple[str, str, str]:
     """
-    Given the left portion of a line (name + address + city concatenated
-    with no reliable double-space separator), attempt to split at the first
-    street-number boundary: a run of whitespace followed by one or more
-    digits and then a non-digit character that appears mid-string.
+    Given a string that merges company name + address (+ optionally city)
+    with only single spaces, split at the first address-start boundary.
 
-    e.g. 'A PLUS RECYCLING & RUBBISH REMOVAL 12 MEDOMAK MOBILE HOME PARK WALDOBORO'
-         → name='A PLUS RECYCLING & RUBBISH REMOVAL'
-           rest='12 MEDOMAK MOBILE HOME PARK WALDOBORO'
+    Recognised address starters:
+      • Numeric:  '147 PINKHAM...', '12 MEDOMAK...'
+      • PO BOX:   'PO BOX 321', 'P.O. BOX 45', 'P O BOX 7'
 
-    The remainder is itself split on 2+ spaces to separate address from city.
-    If no street-number boundary is found, the whole text is treated as name.
+    The split point is found with re.search() so leading company-name
+    words are untouched.  The remainder is itself split on 2+ spaces to
+    separate address from city.
+
+    Returns (name, address, city) — address/city may be empty strings.
     """
-    # Match the FIRST occurrence of whitespace + digits + space mid-string.
-    # Require at least one character before the match so we don't split at pos 0.
-    num_match = re.search(r"(?<=\S)\s+(\d+\s+\S)", text)
-    if num_match:
-        name = text[: num_match.start()].strip()
-        rest = text[num_match.start() :].strip()
+    addr_match = re.search(
+        r"(?<=\S)\s+(P\.?\s*O\.?\s+BOX\s+\d+|\d+\s+\S)",
+        text,
+        re.IGNORECASE,
+    )
+    if addr_match:
+        name = text[: addr_match.start()].strip()
+        rest = text[addr_match.start() :].strip()
         rest_parts = [p.strip() for p in re.split(r"\s{2,}", rest) if p.strip()]
         address = rest_parts[0] if rest_parts else rest
         city    = rest_parts[1] if len(rest_parts) > 1 else ""
@@ -265,9 +268,13 @@ def parse_line(line: str) -> dict | None:
     (state + phone + categories + expiry) and splitting everything before
     it on 2+ spaces to get name / address / city.
 
-    When only one part is returned by the 2+-space split (i.e. name and
-    address run together with only single spaces), fall back to
-    split_name_address() which splits at the first street-number boundary.
+    Two common problem cases handled:
+      • len(parts) == 2: parts[0] has name+address merged with single
+        spaces; parts[1] is the city (e.g. '...INC 147 PINKHAM BROOK RD'
+        then double-space then 'DURHAM').  Apply split_name_address() to
+        parts[0] and use the cleaner city from parts[1].
+      • len(parts) == 1: entire left side is unseparated.  Apply
+        split_name_address() which may recover address and city from rest.
 
     Returns None if the line has no phone pattern (continuation line).
     """
@@ -285,11 +292,20 @@ def parse_line(line: str) -> dict | None:
         address = parts[1]
         city    = parts[2]
     elif len(parts) == 2:
-        name    = parts[0]
-        address = parts[1]
-        city    = ""
+        # parts[0] may have name+address merged; parts[1] is city.
+        # Try to split parts[0] on an address boundary first.
+        split_name, split_addr, _ = split_name_address(parts[0])
+        if split_addr:
+            name    = split_name
+            address = split_addr
+            city    = parts[1]
+        else:
+            # No address boundary found — treat as name + city
+            name    = parts[0]
+            address = parts[1]
+            city    = ""
     elif len(parts) == 1:
-        # No double-space separator found — try splitting on street-number boundary
+        # No double-space separator at all — try address-boundary split
         name, address, city = split_name_address(parts[0])
     else:
         return None  # nothing useful before the anchor
