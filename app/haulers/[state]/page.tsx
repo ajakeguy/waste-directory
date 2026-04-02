@@ -248,30 +248,38 @@ async function StateLandingPage({
 
 /** Human-readable labels for license_metadata keys. */
 const LICENSE_METADATA_LABELS: Record<string, string> = {
-  // NYC BIC
-  bic_number:                 "BIC License Number",
-  boro:                       "Borough",
-  renewal:                    "License Renewal Date",
-  authorized_recycling_type:  "Authorized Recycling Type",
-  // NJ A-901
-  nj_njems_pi:                "NJEMS PI Number",
-  nj_dep_number:              "DEP Registration #",
-  nj_a901_bill:               "A-901 License #",
+  // New Jersey A-901
   nj_county:                  "County",
+  nj_njems_pi:                "NJEMS PI Number",
+  nj_a901_bill:               "A-901 License #",
+  nj_dep_number:              "DEP Registration #",
   nj_site_city:               "Site City",
   // Maine DEP
   me_waste_category:          "Waste Categories (ME)",
-  me_category_descriptions:   "Waste Types (ME)",
+  me_category_descriptions:   "Waste Types",
   me_license_expiry:          "License Expiry",
   // Pennsylvania DEP
-  pa_wh_id:                   "PA Hauler ID",
-  pa_license_id:              "PA License ID",
-  pa_client_id:               "PA Client ID",
+  pa_wh_id:                   "WH Number (PA)",
+  pa_license_id:              "License ID (PA)",
+  pa_client_id:               "Client ID (PA)",
   // Vermont DEC
-  vt_permit_type:             "Permit Type",
-  vt_permit_number:           "Permit Year",
-  vt_waste_type_raw:          "Waste Type Codes",
+  vt_permit_type:             "Permit Type (VT)",
+  vt_permit_number:           "Permit Number (VT)",
+  vt_waste_type_raw:          "Waste Type (VT)",
+  // NYC BIC
+  bic_number:                 "BIC License Number",
+  boro:                       "Borough",
+  authorized_recycling_type:  "Recycling Authorization",
+  renewal:                    "Renewal",
+  effective_date:             "Effective Date",
 };
+
+/** Fallback: convert a raw metadata key to a readable label. */
+function formatMetadataKey(key: string): string {
+  return key
+    .replace(/_/g, " ")
+    .replace(/\b\w/g, (c) => c.toUpperCase());
+}
 
 /** Human-readable label for a contact source identifier. */
 function contactSourceLabel(source: string | null): string | null {
@@ -444,7 +452,7 @@ async function HaulerProfilePage({ segment }: { segment: string }) {
             <dl className="space-y-2">
               {Object.entries(org.license_metadata).map(([key, value]) => {
                 if (!value) return null;
-                const label = LICENSE_METADATA_LABELS[key] ?? key;
+                const label = LICENSE_METADATA_LABELS[key] ?? formatMetadataKey(key);
                 return (
                   <div key={key} className="flex gap-3 text-sm">
                     <dt className="text-gray-500 shrink-0 min-w-[140px]">{label}</dt>
