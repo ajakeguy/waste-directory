@@ -5,13 +5,15 @@ pipelines/me-dep-import/index.py
 Imports Maine DEP non-hazardous waste transporters from the Maine DEP
 data portal PDF.
 
-Parsing strategy: right-anchored regex, since the state code, phone,
-category codes, and expiry date are always structured on the right side
-of each fixed-width line.
+Parsing strategy: locate the STATE + PHONE pattern via re.search(), then
+split everything before that anchor on 2+ spaces to get name / address /
+city. This is more reliable than a full left-to-right regex because the
+left side has variable-length fields separated by inconsistent spacing,
+while the right side (state, phone, categories, expiry) is always
+structured.
 
-Multi-line records: company names that wrap to a second line are detected
-by the absence of a phone number pattern and are appended to the previous
-record's name.
+Multi-line records: lines with no phone match are treated as company-name
+continuations and appended to the previous record.
 
 PDF source:
     https://www.maine.gov/dep/ftp/reports/nactive.pdf
@@ -82,22 +84,19 @@ SKIP_PATTERNS = re.compile(
     re.IGNORECASE,
 )
 
-# Right-anchored regex for a full data record.
+# Anchor pattern: matches the structured right side of a data line.
+# Used with re.search() so leading spaces / variable name widths don't matter.
 # Groups:
-#   1 = company name
-#   2 = address
-#   3 = city / town
-#   4 = state code  (ME, NH, MA, etc.)
-#   5 = area code   (3 digits)
-#   6 = phone rest  (NNN-NNNN or similar)
-#   7 = category codes (e.g. "A", "A B", "A B C")
-#   8 = expiry date  (M/D/YYYY or MM/DD/YYYY)
-RECORD_RE = re.compile(
-    r"^(.*?)\s{2,}(.*?)\s{2,}(.*?)\s{2,}"
-    r"(ME|NH|MA|NY|NJ|CT|VT|NC|IN|PA)\s+"
-    r"\((\d{3})\)\s*([\d\-]+)\s+"
-    r"([A-C\s]*?)\s+"
-    r"(\d{1,2}/\d{1,2}/\d{4})\s*$"
+#   1 = state code  (ME, NH, MA, etc.)
+#   2 = area code   (3 digits)
+#   3 = phone rest  (NNN-NNNN or similar)
+#   4 = category codes (space-separated A / B / C, may be empty)
+#   5 = expiry date  (M/D/YYYY or MM/DD/YYYY)
+PHONE_ANCHOR_RE = re.compile(
+    r"(ME|NH|MA|NY|NJ|CT|VT|NC|IN|PA|NJ)\s+"
+    r"\((\d{3})\)\s*([\d-]+)\s+"
+    r"([A-C](?:\s+[A-C])*|)\s+"
+    r"(\d{1,2}/\d{1,2}/\d{4})"
 )
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -230,92 +229,115 @@ def extract_all_lines(pdf_bytes: bytes) -> tuple[list[str], str]:
     return all_lines, page1_text
 
 
-# ── Step 4: Parse records using right-anchored regex ──────────────────────────
+# ── Step 4: Parse records using phone-pattern anchor ──────────────────────────
+
+def parse_line(line: str) -> dict | None:
+    """
+    Parse a single data line by locating the structured right-side anchor
+    (state + phone + categories + expiry) and splitting everything before
+    it on 2+ spaces to get name / address / city.
+
+    Returns None if the line has no phone pattern (continuation line).
+    """
+    m = PHONE_ANCHOR_RE.search(line)
+    if not m:
+        return None
+
+    # Everything to the left of the anchor is name + address + city
+    before = line[: m.start()].strip()
+    parts  = re.split(r"\s{2,}", before)
+    parts  = [p.strip() for p in parts if p.strip()]
+
+    if len(parts) >= 3:
+        name    = parts[0]
+        address = parts[1]
+        city    = parts[2]
+    elif len(parts) == 2:
+        name    = parts[0]
+        address = parts[1]
+        city    = ""
+    elif len(parts) == 1:
+        name    = parts[0]
+        address = ""
+        city    = ""
+    else:
+        return None  # nothing useful before the anchor
+
+    state      = m.group(1)
+    phone      = f"({m.group(2)}) {m.group(3)}"
+    cat_raw    = m.group(4).strip()
+    expiry_raw = m.group(5)
+
+    expiry    = parse_expiry(expiry_raw)
+    cat_codes = parse_categories(cat_raw)
+
+    license_metadata: dict[str, str] = {}
+    if cat_codes:
+        license_metadata["me_waste_category"] = " ".join(cat_codes)
+        descriptions = [
+            CATEGORY_DESCRIPTIONS[c] for c in cat_codes if c in CATEGORY_DESCRIPTIONS
+        ]
+        if descriptions:
+            license_metadata["me_category_descriptions"] = ", ".join(descriptions)
+    if expiry:
+        license_metadata["me_license_expiry"] = expiry
+
+    return {
+        "name":             name,
+        "address":          address or None,
+        "city":             city or None,
+        "state":            state,
+        "phone":            phone,
+        "zip":              None,
+        "license_number":   None,
+        "license_expiry":   expiry,
+        "service_types":    categories_to_service_types(cat_codes),
+        "license_metadata": license_metadata,
+    }
+
 
 def parse_records(all_lines: list[str]) -> list[dict]:
     """
-    Parse ME DEP transporter records from fixed-width PDF lines.
-
-    Each data line ends with:   STATE  (NNN) NNN-NNNN  CAT  MM/DD/YYYY
-    Lines that don't match this pattern are treated as name continuations.
+    Walk all extracted PDF lines, building records via parse_line().
+    Lines that return None are treated as company-name continuations
+    and appended to the previous record's name.
     """
-    parsed:             list[dict] = []
-    pending:            dict | None = None  # record being built (may get continuation)
-    matched_count       = 0
-    continuation_count  = 0
-    skipped_count       = 0
+    parsed:            list[dict] = []
+    pending:           dict | None = None
+    matched_count      = 0
+    continuation_count = 0
+    skipped_count      = 0
 
     for line in all_lines:
         stripped = line.strip()
 
-        # Skip blank and header/footer/legend lines
         if not stripped:
             continue
         if SKIP_PATTERNS.search(stripped):
             skipped_count += 1
             continue
 
-        m = RECORD_RE.match(line)
+        result = parse_line(line)
 
-        if m:
-            # Flush previous pending record before starting a new one
+        if result:
+            # Flush previous pending record
             if pending is not None:
                 parsed.append(pending)
-
-            name       = m.group(1).strip()
-            address    = m.group(2).strip()
-            city       = m.group(3).strip()
-            state      = m.group(4).strip()
-            area_code  = m.group(5).strip()
-            phone_rest = m.group(6).strip()
-            cat_raw    = m.group(7).strip()
-            expiry_raw = m.group(8).strip()
-
-            phone      = f"({area_code}) {phone_rest}" if area_code else None
-            expiry     = parse_expiry(expiry_raw)
-            cat_codes  = parse_categories(cat_raw)
-
-            # Build license_metadata
-            license_metadata: dict[str, str] = {}
-            if cat_codes:
-                license_metadata["me_waste_category"] = " ".join(cat_codes)
-                descriptions = [
-                    CATEGORY_DESCRIPTIONS[c]
-                    for c in cat_codes
-                    if c in CATEGORY_DESCRIPTIONS
-                ]
-                if descriptions:
-                    license_metadata["me_category_descriptions"] = ", ".join(descriptions)
-            if expiry:
-                license_metadata["me_license_expiry"] = expiry
-
-            pending = {
-                "name":             name,
-                "address":          address or None,
-                "city":             city or None,
-                "state":            state,
-                "phone":            phone,
-                "zip":              None,
-                "license_number":   None,
-                "license_expiry":   expiry,
-                "service_types":    categories_to_service_types(cat_codes),
-                "license_metadata": license_metadata,
-            }
+            pending = result
             matched_count += 1
-
         else:
-            # Line didn't match — treat as a company-name continuation
+            # No phone anchor — continuation of previous record's name
             if pending is not None and len(stripped) >= 2:
                 pending["name"] = pending["name"] + " " + stripped
                 continuation_count += 1
             else:
                 skipped_count += 1
 
-    # Don't forget the last pending record
+    # Flush the last record
     if pending is not None:
         parsed.append(pending)
 
-    print(f"\n  Regex-matched lines  : {matched_count}")
+    print(f"\n  Phone-anchor matches : {matched_count}")
     print(f"  Continuation lines   : {continuation_count}")
     print(f"  Skipped lines        : {skipped_count}")
     print(f"  Total records parsed : {len(parsed)}")
@@ -409,7 +431,23 @@ def main() -> None:
 
     supabase: Client = create_client(supabase_url, service_role_key)
 
-    # ── 7. Load existing orgs for dedup ───────────────────────────────────────
+    # ── 7. Wipe any previously imported ME DEP records (clean slate) ──────────
+    # This ensures stale or misaligned records from earlier runs are removed
+    # before the freshly parsed data is inserted.
+    print("\nDeleting previously imported ME DEP records ...")
+    try:
+        del_result = (
+            supabase.table("organizations")
+            .delete()
+            .eq("data_source", DATA_SOURCE)
+            .execute()
+        )
+        deleted_count = len(del_result.data) if del_result.data else 0
+        print(f"  Deleted {deleted_count} existing ME DEP records")
+    except Exception as exc:
+        print(f"  Warning: could not delete existing records: {exc}")
+
+    # ── 8. Load existing orgs for dedup ───────────────────────────────────────
     print("\nLoading existing organizations for dedup...")
     existing_name_map: dict[str, dict] = {}
     existing_slug_set: set[str] = set()
@@ -435,7 +473,7 @@ def main() -> None:
 
     print(f"  Loaded {len(existing_name_map)} existing organizations")
 
-    # ── 8. Classify records ───────────────────────────────────────────────────
+    # ── 9. Classify records ───────────────────────────────────────────────────
     to_update:           list[tuple[dict, dict]] = []  # (existing_org, record) — name-matched
     slug_matched_updates: list[tuple[str, dict]] = []  # (slug, record) — slug-only match
     to_insert:           list[dict] = []
@@ -499,7 +537,7 @@ def main() -> None:
     if skipped_no_name:
         print(f"  Skipped (no name):               {skipped_no_name}")
 
-    # ── 9. Update name-matched existing orgs ──────────────────────────────────
+    # ── 10. Update name-matched existing orgs ─────────────────────────────────
     update_errors = 0
     for existing, record in to_update:
         current_states = existing.get("service_area_states") or []
@@ -519,7 +557,7 @@ def main() -> None:
     if to_update:
         print(f"  ✓ Updated {len(to_update) - update_errors} name-matched records")
 
-    # ── 9b. Update slug-matched orgs ──────────────────────────────────────────
+    # ── 10b. Update slug-matched orgs ─────────────────────────────────────────
     slug_update_errors = 0
     slug_updated = 0
     for slug, record in slug_matched_updates:
@@ -537,7 +575,7 @@ def main() -> None:
     if slug_matched_updates:
         print(f"  ✓ Updated {slug_updated} slug-matched records")
 
-    # ── 10. Insert new records ─────────────────────────────────────────────────
+    # ── 11. Insert new records ─────────────────────────────────────────────────
     insert_errors  = 0
     newly_inserted = 0
 
@@ -568,7 +606,7 @@ def main() -> None:
                 print(f"  ✗ Batch {batch_num} failed: {exc}")
                 insert_errors += 1
 
-    # ── 11. Summary ───────────────────────────────────────────────────────────
+    # ── 12. Summary ───────────────────────────────────────────────────────────
     total_errors = update_errors + slug_update_errors + insert_errors
     print("\n=== Summary ===")
     print(f"  Total records parsed : {len(mapped)}")
