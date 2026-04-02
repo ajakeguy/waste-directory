@@ -166,3 +166,33 @@ export type EquipmentListing = {
   created_at: string
   updated_at: string
 }
+
+// ── Diversion Reports ──────────────────────────────────────────────────────────
+
+export type MaterialStream = {
+  material: string
+  quantity: number
+  unit: "tons" | "lbs"
+  category: "recycling" | "organics" | "landfill" | "other"
+  diverted: boolean
+}
+
+export type DiversionReport = {
+  id: string
+  user_id: string
+  report_name: string
+  hauler_name: string
+  hauler_logo_url: string | null
+  customer_name: string
+  service_address: string
+  service_city: string
+  service_state: string
+  service_zip: string
+  period_start: string
+  period_end: string
+  material_streams: MaterialStream[]
+  notes: string | null
+  status: "draft" | "published"
+  created_at: string
+  updated_at: string
+}
