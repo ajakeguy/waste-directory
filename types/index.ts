@@ -167,6 +167,31 @@ export type EquipmentListing = {
   updated_at: string
 }
 
+// ── Route Optimizer ────────────────────────────────────────────────────────────
+
+export type RouteStop = {
+  id: string
+  address: string
+  name?: string
+  lat?: number
+  lng?: number
+  geocoded?: boolean
+}
+
+export type SavedRoute = {
+  id: string
+  user_id: string
+  route_name: string
+  start_address: string
+  end_address: string
+  stops: RouteStop[]
+  optimized_order: number[] | null
+  total_distance_km: number | null
+  status: string
+  created_at: string
+  updated_at: string
+}
+
 // ── Diversion Reports ──────────────────────────────────────────────────────────
 
 export type MaterialStream = {
