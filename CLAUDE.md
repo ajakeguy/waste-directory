@@ -447,6 +447,20 @@ A public storage bucket called **`marketplace-photos`** must be created manually
    - Operation: INSERT
    - Expression: `(auth.uid() IS NOT NULL)`
 
+## Route Optimizer
+
+### API Key Required
+`NEXT_PUBLIC_ORS_API_KEY` is required for geocoding.
+- Sign up for a free key at https://openrouteservice.org
+- Free plan: 2 000 geocoding requests / day
+- Add to `.env.local`: `NEXT_PUBLIC_ORS_API_KEY=your_key_here`
+- Without a key, geocoding silently returns null (no crashes, but stops can't be placed on map)
+
+### How it works
+- Geocoding: OpenRouteService `/geocode/search` API, 100 ms delay between batch requests
+- Optimization: Nearest-Neighbor heuristic + 2-opt improvement (runs client-side, no server call)
+- Map: Leaflet 1.9.4 loaded via CDN (unpkg), OSM tiles, no npm package needed
+
 ## Diversion Reports
 
 ### Supabase Storage — Manual Setup Required

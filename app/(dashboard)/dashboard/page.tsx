@@ -2,7 +2,7 @@ import { redirect } from "next/navigation";
 import type { Metadata } from "next";
 import { createClient } from "@/lib/supabase/server";
 import { DashboardClient } from "@/components/dashboard/DashboardClient";
-import type { Organization, SavedItemWithOrg, UserList, EquipmentListing, DiversionReport } from "@/types";
+import type { Organization, SavedItemWithOrg, UserList, EquipmentListing, DiversionReport, SavedRoute } from "@/types";
 
 export const metadata: Metadata = {
   title: "Dashboard | WasteDirectory",
@@ -101,6 +101,19 @@ export default async function DashboardPage() {
     "id" | "report_name" | "customer_name" | "period_start" | "period_end" | "status" | "created_at" | "updated_at"
   >[];
 
+  // Recent saved routes (latest 3)
+  const { data: routesData } = await supabase
+    .from("saved_routes")
+    .select("id, route_name, stops, total_distance_km, status, updated_at")
+    .eq("user_id", user.id)
+    .order("updated_at", { ascending: false })
+    .limit(3);
+
+  const recentRoutes = (routesData ?? []) as unknown as Pick<
+    SavedRoute,
+    "id" | "route_name" | "stops" | "total_distance_km" | "status" | "updated_at"
+  >[];
+
   return (
     <DashboardClient
       userId={user.id}
@@ -109,6 +122,7 @@ export default async function DashboardPage() {
       savedItems={savedItems}
       myListings={myListings}
       recentReports={recentReports}
+      recentRoutes={recentRoutes}
     />
   );
 }

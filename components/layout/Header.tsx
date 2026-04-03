@@ -54,6 +54,12 @@ export default async function Header() {
             Reports
           </Link>
           <Link
+            href="/routes"
+            className="text-sm font-medium text-white/90 hover:text-white transition-colors"
+          >
+            Routes
+          </Link>
+          <Link
             href="/news"
             className="text-sm font-medium text-white/90 hover:text-white transition-colors"
           >

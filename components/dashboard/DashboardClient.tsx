@@ -14,6 +14,7 @@ import {
   Palette,
   Trash2,
   FileText,
+  Route,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -26,7 +27,7 @@ import {
 import { OrganizationCard } from "@/components/directory/OrganizationCard";
 import { NewListModal } from "@/components/dashboard/NewListModal";
 import { MyListings } from "@/components/dashboard/MyListings";
-import type { UserList, SavedItemWithOrg, EquipmentListing, DiversionReport } from "@/types";
+import type { UserList, SavedItemWithOrg, EquipmentListing, DiversionReport, SavedRoute } from "@/types";
 
 // ── Color presets (shared with NewListModal) ──────────────────────────────────
 
@@ -46,6 +47,11 @@ type RecentReport = Pick<
   "id" | "report_name" | "customer_name" | "period_start" | "period_end" | "status" | "created_at" | "updated_at"
 >;
 
+type RecentRoute = Pick<
+  SavedRoute,
+  "id" | "route_name" | "stops" | "total_distance_km" | "status" | "updated_at"
+>;
+
 type Props = {
   userId: string;
   displayName: string;
@@ -53,6 +59,7 @@ type Props = {
   savedItems: SavedItemWithOrg[];
   myListings: EquipmentListing[];
   recentReports: RecentReport[];
+  recentRoutes: RecentRoute[];
 };
 
 // ── Main client component ─────────────────────────────────────────────────────
@@ -64,6 +71,7 @@ export function DashboardClient({
   savedItems,
   myListings,
   recentReports,
+  recentRoutes,
 }: Props) {
   const [lists, setLists] = useState<UserList[]>(initialLists);
   const [activeListId, setActiveListId] = useState<string | "all">("all");
@@ -394,6 +402,73 @@ export function DashboardClient({
                 </Link>
               </div>
             )}
+          </div>
+        )}
+      </div>
+
+      {/* Recent Routes */}
+      <div className="max-w-6xl mx-auto px-4 sm:px-6 pb-10">
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="font-semibold text-gray-900 flex items-center gap-2">
+            <Route className="size-4 text-[#2D6A4F]" />
+            Route Optimizer
+          </h2>
+          <Link
+            href="/routes/new"
+            className="inline-flex items-center gap-1.5 h-8 px-3 rounded-lg bg-[#2D6A4F] text-white text-sm font-medium hover:bg-[#245a42] transition-colors"
+          >
+            <Plus className="size-3.5" />
+            New Route
+          </Link>
+        </div>
+
+        {recentRoutes.length === 0 ? (
+          <div className="rounded-xl border border-dashed border-gray-200 py-10 text-center px-4">
+            <div className="w-10 h-10 rounded-full bg-gray-100 flex items-center justify-center mx-auto mb-3">
+              <Route className="size-4 text-gray-400" />
+            </div>
+            <p className="font-medium text-gray-700 mb-1">No saved routes yet</p>
+            <p className="text-sm text-gray-500 mb-4">
+              Add your stops, optimize, and get the shortest pickup route
+            </p>
+            <Link
+              href="/routes/new"
+              className="inline-flex h-9 items-center px-5 rounded-lg bg-[#2D6A4F] text-white text-sm font-medium hover:bg-[#245a42] transition-colors"
+            >
+              Build your first route
+            </Link>
+          </div>
+        ) : (
+          <div className="space-y-2">
+            {recentRoutes.map((r) => (
+              <Link
+                key={r.id}
+                href={`/routes/${r.id}`}
+                className="flex items-center justify-between gap-4 rounded-xl border border-gray-200 bg-white px-4 py-3 hover:border-[#2D6A4F]/40 hover:shadow-sm transition-all"
+              >
+                <div className="min-w-0">
+                  <p className="font-medium text-gray-900 truncate">{r.route_name}</p>
+                  <p className="text-sm text-gray-500 truncate">
+                    {r.stops.length} stop{r.stops.length !== 1 ? "s" : ""}
+                    {r.total_distance_km ? ` · ${r.total_distance_km.toFixed(1)} km` : ""}
+                  </p>
+                </div>
+                <span
+                  className={`shrink-0 text-xs px-2 py-0.5 rounded-full font-medium ${
+                    r.status === "optimized"
+                      ? "bg-[#2D6A4F]/10 text-[#2D6A4F]"
+                      : "bg-gray-100 text-gray-500"
+                  }`}
+                >
+                  {r.status === "optimized" ? "Optimized" : "Draft"}
+                </span>
+              </Link>
+            ))}
+            <div className="text-center pt-1">
+              <Link href="/routes" className="text-sm text-[#2D6A4F] hover:underline">
+                View all routes →
+              </Link>
+            </div>
           </div>
         )}
       </div>
