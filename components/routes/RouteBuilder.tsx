@@ -11,17 +11,18 @@
 import { useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
-  Plus, Trash2, Upload, Loader2, CheckCircle2,
-  GripVertical, Download, MapPin, Save,
+  Plus, Trash2, Upload, Loader2, CheckCircle2, XCircle,
+  GripVertical, Download, MapPin, Save, Circle,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { RouteMap } from "@/components/routes/RouteMap";
-import { geocodeAddress, geocodeAddresses } from "@/lib/geocoding";
+import { geocodeAddress, geocodeAddressesSequential } from "@/lib/geocoding";
 import { optimizeRoute } from "@/lib/route-optimizer";
 import type { RouteStop, SavedRoute } from "@/types";
 
 type LatLng = { lat: number; lng: number };
+type StopStatus = "idle" | "geocoding" | "ok" | "error";
 
 function uuid() {
   return crypto.randomUUID();
@@ -73,6 +74,26 @@ function downloadSampleCsv() {
   a.click();
 }
 
+// ── Stop status icon ──────────────────────────────────────────────────────────
+
+function StopStatusIcon({ status, error }: { status: StopStatus; error?: string }) {
+  if (status === "geocoding") {
+    return <Loader2 className="size-3.5 text-gray-400 animate-spin shrink-0" />;
+  }
+  if (status === "ok") {
+    return <CheckCircle2 className="size-3.5 text-green-500 shrink-0" />;
+  }
+  if (status === "error") {
+    return (
+      <span title={error ?? "Geocoding failed"} className="cursor-help shrink-0">
+        <XCircle className="size-3.5 text-red-400" />
+      </span>
+    );
+  }
+  // idle — grey dot
+  return <Circle className="size-3 text-gray-300 shrink-0" />;
+}
+
 // ── Component ─────────────────────────────────────────────────────────────────
 
 type Props = { userId: string; existingRoute?: SavedRoute };
@@ -84,15 +105,30 @@ export function RouteBuilder({ userId: _userId, existingRoute }: Props) {
   const dragIdx     = useRef<number | null>(null);
   const isEdit = !!existingRoute;
 
-  // ── Form state (pre-populated in edit mode)
+  // ── Form state
   const [routeName,    setRouteName]    = useState(existingRoute?.route_name    ?? "");
   const [startAddress, setStartAddress] = useState(existingRoute?.start_address ?? "");
   const [startCoords,  setStartCoords]  = useState<LatLng | null>(null);
-  const [startGeocoding, setStartGeocoding] = useState(false);
-  const [endAddress,   setEndAddress]   = useState(existingRoute?.end_address   ?? "");
+  const [startStatus,  setStartStatus]  = useState<StopStatus>(
+    existingRoute?.start_address ? "idle" : "idle"
+  );
+  const [startError,   setStartError]   = useState<string | null>(null);
+
+  const [endAddress,   setEndAddress]   = useState(existingRoute?.end_address ?? "");
   const [endCoords,    setEndCoords]    = useState<LatLng | null>(null);
-  const [endGeocoding, setEndGeocoding] = useState(false);
+  const [endStatus,    setEndStatus]    = useState<StopStatus>("idle");
+  const [endError,     setEndError]     = useState<string | null>(null);
+
   const [stops,        setStops]        = useState<RouteStop[]>(existingRoute?.stops ?? []);
+  const [stopStatuses, setStopStatuses] = useState<Record<string, StopStatus>>(() => {
+    const init: Record<string, StopStatus> = {};
+    for (const s of (existingRoute?.stops ?? [])) {
+      init[s.id] = s.geocoded ? "ok" : "idle";
+    }
+    return init;
+  });
+  const [stopErrors,   setStopErrors]   = useState<Record<string, string>>({});
+
   const [newAddr,      setNewAddr]      = useState("");
   const [newName,      setNewName]      = useState("");
 
@@ -106,46 +142,83 @@ export function RouteBuilder({ userId: _userId, existingRoute }: Props) {
   const [error,     setError]     = useState<string | null>(null);
   const [csvStatus, setCsvStatus] = useState<string | null>(null);
 
-  // ── Geocode single address on blur ────────────────────────────────────────────
+  // ── Geocode helpers ───────────────────────────────────────────────────────────
 
   async function geocodeStart() {
-    if (!startAddress.trim() || startCoords) return;
-    setStartGeocoding(true);
+    if (!startAddress.trim() || startStatus === "geocoding") return;
+    setStartStatus("geocoding");
+    setStartError(null);
     const r = await geocodeAddress(startAddress);
-    setStartGeocoding(false);
-    if (r) setStartCoords(r);
-    else setError("Could not geocode start address. Check the address and try again.");
+    if (r.ok) {
+      setStartCoords({ lat: r.lat, lng: r.lng });
+      setStartStatus("ok");
+      setStartError(null);
+    } else {
+      setStartCoords(null);
+      setStartStatus("error");
+      setStartError(r.error);
+      setError(`Start address: ${r.error}`);
+    }
   }
 
   async function geocodeEnd() {
-    if (!endAddress.trim() || endCoords) return;
-    setEndGeocoding(true);
+    if (!endAddress.trim() || endStatus === "geocoding") return;
+    setEndStatus("geocoding");
+    setEndError(null);
     const r = await geocodeAddress(endAddress);
-    setEndGeocoding(false);
-    if (r) setEndCoords(r);
-    else setError("Could not geocode end address. Check the address and try again.");
+    if (r.ok) {
+      setEndCoords({ lat: r.lat, lng: r.lng });
+      setEndStatus("ok");
+      setEndError(null);
+    } else {
+      setEndCoords(null);
+      setEndStatus("error");
+      setEndError(r.error);
+      setError(`End address: ${r.error}`);
+    }
   }
 
-  // ── Add a stop manually ───────────────────────────────────────────────────────
+  /** Geocode a single stop by ID and update state immediately (live map update). */
+  async function geocodeStopById(id: string, address: string) {
+    setStopStatuses((prev) => ({ ...prev, [id]: "geocoding" }));
+    const r = await geocodeAddress(address);
+    if (r.ok) {
+      setStops((prev) =>
+        prev.map((s) => s.id === id ? { ...s, lat: r.lat, lng: r.lng, geocoded: true } : s)
+      );
+      setStopStatuses((prev) => ({ ...prev, [id]: "ok" }));
+      setStopErrors((prev) => { const n = { ...prev }; delete n[id]; return n; });
+    } else {
+      setStopStatuses((prev) => ({ ...prev, [id]: "error" }));
+      setStopErrors((prev) => ({ ...prev, [id]: r.error }));
+    }
+  }
 
-  function addStop() {
+  // ── Add a stop manually (auto-geocodes after adding) ─────────────────────────
+
+  async function addStop() {
     if (!newAddr.trim()) return;
+    const id = uuid();
     const stop: RouteStop = {
-      id:       uuid(),
+      id,
       address:  newAddr.trim(),
       name:     newName.trim() || `Stop ${stops.length + 1}`,
       geocoded: false,
     };
     setStops((prev) => [...prev, stop]);
+    setStopStatuses((prev) => ({ ...prev, [id]: "idle" }));
     setNewAddr("");
     setNewName("");
-    // Clear any previous optimized result when stops change
     setOptimizedOrder(null);
     setTotalDistanceKm(null);
+    // Auto-geocode the new stop immediately
+    await geocodeStopById(id, stop.address);
   }
 
   function removeStop(id: string) {
     setStops((prev) => prev.filter((s) => s.id !== id));
+    setStopStatuses((prev) => { const n = { ...prev }; delete n[id]; return n; });
+    setStopErrors((prev) => { const n = { ...prev }; delete n[id]; return n; });
     setOptimizedOrder(null);
     setTotalDistanceKm(null);
   }
@@ -172,6 +245,11 @@ export function RouteBuilder({ userId: _userId, existingRoute }: Props) {
         geocoded: false,
       }));
       setStops((prev) => [...prev, ...newStops]);
+      setStopStatuses((prev) => {
+        const n = { ...prev };
+        newStops.forEach((s) => { n[s.id] = "idle"; });
+        return n;
+      });
       setCsvStatus(`${rows.length} stops loaded from CSV`);
       setOptimizedOrder(null);
       setTotalDistanceKm(null);
@@ -197,70 +275,91 @@ export function RouteBuilder({ userId: _userId, existingRoute }: Props) {
     setTotalDistanceKm(null);
   }
 
-  // ── Geocode all un-geocoded stops ─────────────────────────────────────────────
+  // ── Geocode all un-geocoded stops (one-by-one, live map updates) ──────────────
 
   async function geocodeAll() {
-    const ungeocoded = stops.filter((s) => !s.geocoded);
-    if (ungeocoded.length === 0) return;
-    setGeocodeProgress({ done: 0, total: ungeocoded.length });
+    const toGeocode = stops.filter((s) => !s.geocoded);
+    if (toGeocode.length === 0) return;
+
     setError(null);
+    setGeocodeProgress({ done: 0, total: toGeocode.length });
 
-    const addresses = ungeocoded.map((s) => s.address);
-    const results = await geocodeAddresses(addresses, (done, total) =>
-      setGeocodeProgress({ done, total })
+    // Mark all as "geocoding" upfront
+    setStopStatuses((prev) => {
+      const n = { ...prev };
+      toGeocode.forEach((s) => { n[s.id] = "geocoding"; });
+      return n;
+    });
+
+    let failCount = 0;
+
+    await geocodeAddressesSequential(
+      toGeocode.map((s) => s.address),
+      (i, result) => {
+        const stop = toGeocode[i];
+        if (result.ok) {
+          // Live update: add marker to map immediately
+          setStops((prev) =>
+            prev.map((s) =>
+              s.id === stop.id
+                ? { ...s, lat: result.lat, lng: result.lng, geocoded: true }
+                : s
+            )
+          );
+          setStopStatuses((prev) => ({ ...prev, [stop.id]: "ok" }));
+          setStopErrors((prev) => { const n = { ...prev }; delete n[stop.id]; return n; });
+        } else {
+          failCount++;
+          setStopStatuses((prev) => ({ ...prev, [stop.id]: "error" }));
+          setStopErrors((prev) => ({ ...prev, [stop.id]: result.error }));
+        }
+      },
+      (done, total) => setGeocodeProgress({ done, total })
     );
 
-    setStops((prev) =>
-      prev.map((stop) => {
-        const idx = ungeocoded.findIndex((u) => u.id === stop.id);
-        if (idx === -1) return stop;
-        const r = results[idx];
-        if (!r) return { ...stop, geocoded: false };
-        return { ...stop, lat: r.lat, lng: r.lng, geocoded: true };
-      })
-    );
     setGeocodeProgress(null);
     setOptimizedOrder(null);
     setTotalDistanceKm(null);
+
+    if (failCount > 0) {
+      setError(
+        `${failCount} stop${failCount > 1 ? "s" : ""} could not be geocoded. ` +
+        `Hover the red ✗ icon on each stop to see the reason. ` +
+        `Check spelling or add a city/state/zip to the address.`
+      );
+    }
   }
 
   // ── Optimize route ────────────────────────────────────────────────────────────
 
   async function runOptimize() {
     if (!startCoords || !endCoords) {
-      setError("Geocode the start and end address first.");
+      setError("Geocode the start and end address first (tab out of each field).");
       return;
     }
     const geocodedStops = stops.filter((s) => s.geocoded && s.lat && s.lng);
     if (geocodedStops.length === 0) {
-      setError("No geocoded stops to optimize. Run 'Geocode All Stops' first.");
+      setError("No geocoded stops to optimize. Add stops and wait for geocoding to complete.");
       return;
-    }
-    if (geocodedStops.length < stops.length) {
-      setError(
-        `${stops.length - geocodedStops.length} stop(s) could not be geocoded and will be skipped.`
-      );
     }
 
     setOptimizing(true);
     setError(null);
 
-    // Run in a setTimeout so the UI can update first
     await new Promise<void>((resolve) => {
       setTimeout(() => {
         const coords = geocodedStops.map((s) => ({ lat: s.lat!, lng: s.lng! }));
-        const { orderedIndices, totalDistanceKm } = optimizeRoute(
+        const { orderedIndices, totalDistanceKm: dist } = optimizeRoute(
           coords,
           startCoords,
           endCoords
         );
-        // Map back to indices in the full stops array
         const fullIndices = orderedIndices.map((i) => {
-          const geocodedStop = geocodedStops[i];
-          return stops.findIndex((s) => s.id === geocodedStop.id);
+          const gs = geocodedStops[i];
+          return stops.findIndex((s) => s.id === gs.id);
         });
         setOptimizedOrder(fullIndices);
-        setTotalDistanceKm(totalDistanceKm);
+        setTotalDistanceKm(dist);
         resolve();
       }, 50);
     });
@@ -283,12 +382,8 @@ export function RouteBuilder({ userId: _userId, existingRoute }: Props) {
       start_address:     startAddress.trim(),
       end_address:       endAddress.trim(),
       stops:             stops.map((s) => ({
-        id:       s.id,
-        address:  s.address,
-        name:     s.name,
-        lat:      s.lat,
-        lng:      s.lng,
-        geocoded: s.geocoded,
+        id: s.id, address: s.address, name: s.name,
+        lat: s.lat, lng: s.lng, geocoded: s.geocoded,
       })),
       optimized_order:   optimizedOrder,
       total_distance_km: totalDistanceKm,
@@ -316,18 +411,16 @@ export function RouteBuilder({ userId: _userId, existingRoute }: Props) {
 
   // ── Derived state ─────────────────────────────────────────────────────────────
 
-  const allGeocoded =
-    stops.length > 0 &&
-    stops.every((s) => s.geocoded) &&
+  const geocodedStopsCount = stops.filter((s) => s.geocoded).length;
+  const ungeocodedCount    = stops.filter((s) => !s.geocoded).length;
+  const anyGeocoding       = Object.values(stopStatuses).includes("geocoding") ||
+                             startStatus === "geocoding" || endStatus === "geocoding";
+
+  const canOptimize =
+    geocodedStopsCount > 0 &&
     !!startCoords &&
-    !!endCoords;
-
-  const canOptimize = allGeocoded;
-  const ungeocodedCount = stops.filter((s) => !s.geocoded).length;
-
-  // For the map: show start/end geocoded coords even before optimization
-  const mapStartCoords = startCoords;
-  const mapEndCoords   = endCoords;
+    !!endCoords &&
+    !anyGeocoding;
 
   // ── Render ─────────────────────────────────────────────────────────────────
 
@@ -339,8 +432,16 @@ export function RouteBuilder({ userId: _userId, existingRoute }: Props) {
 
         {/* Error banner */}
         {error && (
-          <div className="rounded-lg bg-red-50 border border-red-200 px-4 py-3 text-sm text-red-700">
-            {error}
+          <div className="rounded-lg bg-red-50 border border-red-200 px-4 py-3 text-sm text-red-700 flex items-start gap-2">
+            <XCircle className="size-4 shrink-0 mt-0.5 text-red-400" />
+            <span>{error}</span>
+            <button
+              type="button"
+              className="ml-auto shrink-0 text-red-300 hover:text-red-500"
+              onClick={() => setError(null)}
+            >
+              ×
+            </button>
           </div>
         )}
 
@@ -364,19 +465,19 @@ export function RouteBuilder({ userId: _userId, existingRoute }: Props) {
           <div className="relative">
             <Input
               value={startAddress}
-              onChange={(e) => { setStartAddress(e.target.value); setStartCoords(null); }}
+              onChange={(e) => { setStartAddress(e.target.value); setStartCoords(null); setStartStatus("idle"); }}
               onBlur={geocodeStart}
               placeholder="123 Depot Road, Burlington, VT"
+              className="pr-8"
             />
             <div className="absolute right-3 top-1/2 -translate-y-1/2">
-              {startGeocoding ? (
-                <Loader2 className="size-4 text-gray-400 animate-spin" />
-              ) : startCoords ? (
-                <CheckCircle2 className="size-4 text-green-500" />
-              ) : null}
+              <StopStatusIcon status={startStatus} error={startError ?? undefined} />
             </div>
           </div>
-          {!startCoords && startAddress && !startGeocoding && (
+          {startStatus === "error" && startError && (
+            <p className="text-xs text-red-500 mt-1">{startError}</p>
+          )}
+          {startStatus === "idle" && startAddress && (
             <p className="text-xs text-gray-400 mt-1">Tab out to geocode</p>
           )}
         </section>
@@ -385,6 +486,11 @@ export function RouteBuilder({ userId: _userId, existingRoute }: Props) {
         <section className="bg-white rounded-xl border border-gray-200 p-5">
           <h2 className="text-sm font-semibold text-gray-700 uppercase tracking-wide mb-3">
             Stops ({stops.length})
+            {geocodedStopsCount > 0 && (
+              <span className="ml-2 text-xs font-normal text-gray-400 normal-case">
+                {geocodedStopsCount}/{stops.length} geocoded
+              </span>
+            )}
           </h2>
 
           {/* Manual add */}
@@ -402,7 +508,12 @@ export function RouteBuilder({ userId: _userId, existingRoute }: Props) {
               placeholder="Label (opt.)"
               className="w-32"
             />
-            <Button type="button" onClick={addStop} size="sm" className="bg-[#2D6A4F] hover:bg-[#245a42] text-white shrink-0">
+            <Button
+              type="button"
+              onClick={addStop}
+              size="sm"
+              className="bg-[#2D6A4F] hover:bg-[#245a42] text-white shrink-0"
+            >
               <Plus className="size-4" />
             </Button>
           </div>
@@ -445,35 +556,44 @@ export function RouteBuilder({ userId: _userId, existingRoute }: Props) {
             <p className="text-sm text-gray-400 text-center py-4">No stops added yet</p>
           ) : (
             <div className="space-y-1 max-h-72 overflow-y-auto pr-1">
-              {stops.map((stop, idx) => (
-                <div
-                  key={stop.id}
-                  draggable
-                  onDragStart={() => onDragStart(idx)}
-                  onDragOver={(e) => e.preventDefault()}
-                  onDrop={() => onDrop(idx)}
-                  className="flex items-center gap-2 rounded-lg border border-gray-100 bg-gray-50 px-2 py-1.5 text-sm cursor-grab active:cursor-grabbing"
-                >
-                  <GripVertical className="size-3.5 text-gray-300 shrink-0" />
-                  <span className="w-5 text-xs text-gray-400 tabular-nums shrink-0">{idx + 1}</span>
-                  <div className="flex-1 min-w-0">
-                    <p className="font-medium text-gray-800 truncate text-xs">{stop.name}</p>
-                    <p className="text-gray-500 truncate text-xs">{stop.address}</p>
-                  </div>
-                  {stop.geocoded ? (
-                    <CheckCircle2 className="size-3.5 text-green-500 shrink-0" />
-                  ) : (
-                    <MapPin className="size-3.5 text-gray-300 shrink-0" />
-                  )}
-                  <button
-                    type="button"
-                    onClick={() => removeStop(stop.id)}
-                    className="text-gray-300 hover:text-red-400 transition-colors shrink-0"
+              {stops.map((stop, idx) => {
+                const status = stopStatuses[stop.id] ?? "idle";
+                const errMsg = stopErrors[stop.id];
+                return (
+                  <div
+                    key={stop.id}
+                    draggable
+                    onDragStart={() => onDragStart(idx)}
+                    onDragOver={(e) => e.preventDefault()}
+                    onDrop={() => onDrop(idx)}
+                    className={`flex items-center gap-2 rounded-lg border px-2 py-1.5 text-sm cursor-grab active:cursor-grabbing transition-colors ${
+                      status === "error"
+                        ? "border-red-200 bg-red-50"
+                        : "border-gray-100 bg-gray-50"
+                    }`}
                   >
-                    <Trash2 className="size-3.5" />
-                  </button>
-                </div>
-              ))}
+                    <GripVertical className="size-3.5 text-gray-300 shrink-0" />
+                    <span className="w-5 text-xs text-gray-400 tabular-nums shrink-0">{idx + 1}</span>
+                    <div className="flex-1 min-w-0">
+                      <p className="font-medium text-gray-800 truncate text-xs">{stop.name}</p>
+                      <p className="text-gray-500 truncate text-xs">{stop.address}</p>
+                      {status === "error" && errMsg && (
+                        <p className="text-red-500 text-xs truncate" title={errMsg}>
+                          {errMsg}
+                        </p>
+                      )}
+                    </div>
+                    <StopStatusIcon status={status} error={errMsg} />
+                    <button
+                      type="button"
+                      onClick={() => removeStop(stop.id)}
+                      className="text-gray-300 hover:text-red-400 transition-colors shrink-0"
+                    >
+                      <Trash2 className="size-3.5" />
+                    </button>
+                  </div>
+                );
+              })}
             </div>
           )}
         </section>
@@ -486,18 +606,21 @@ export function RouteBuilder({ userId: _userId, existingRoute }: Props) {
           <div className="relative">
             <Input
               value={endAddress}
-              onChange={(e) => { setEndAddress(e.target.value); setEndCoords(null); }}
+              onChange={(e) => { setEndAddress(e.target.value); setEndCoords(null); setEndStatus("idle"); }}
               onBlur={geocodeEnd}
               placeholder="789 Transfer Station Rd, Montpelier, VT"
+              className="pr-8"
             />
             <div className="absolute right-3 top-1/2 -translate-y-1/2">
-              {endGeocoding ? (
-                <Loader2 className="size-4 text-gray-400 animate-spin" />
-              ) : endCoords ? (
-                <CheckCircle2 className="size-4 text-green-500" />
-              ) : null}
+              <StopStatusIcon status={endStatus} error={endError ?? undefined} />
             </div>
           </div>
+          {endStatus === "error" && endError && (
+            <p className="text-xs text-red-500 mt-1">{endError}</p>
+          )}
+          {endStatus === "idle" && endAddress && (
+            <p className="text-xs text-gray-400 mt-1">Tab out to geocode</p>
+          )}
         </section>
 
         {/* Section 5: Actions */}
@@ -552,7 +675,9 @@ export function RouteBuilder({ userId: _userId, existingRoute }: Props) {
                       ? "Add stops first"
                       : !startCoords || !endCoords
                       ? "Geocode start & end"
-                      : "Geocode all stops"}
+                      : anyGeocoding
+                      ? "Geocoding in progress…"
+                      : "Geocode stops first"}
                   </span>
                 )}
               </>
@@ -590,8 +715,8 @@ export function RouteBuilder({ userId: _userId, existingRoute }: Props) {
       <div className="flex-1 min-h-[400px] lg:min-h-0 sticky top-24 self-start">
         <div className="bg-white rounded-xl border border-gray-200 overflow-hidden h-[600px] lg:h-[calc(100vh-120px)]">
           <RouteMap
-            startCoords={mapStartCoords}
-            endCoords={mapEndCoords}
+            startCoords={startCoords}
+            endCoords={endCoords}
             stops={stops}
             optimizedOrder={optimizedOrder}
             className="h-full w-full"
