@@ -176,6 +176,7 @@ export type RouteStop = {
   lat?: number
   lng?: number
   geocoded?: boolean
+  yards?: number
 }
 
 export type SavedRoute = {

@@ -3,21 +3,22 @@
 /**
  * components/routes/RouteCostCalculator.tsx
  *
- * Live route cost estimator. Accepts total miles + stop count and renders
- * a two-column breakdown of time, fuel, and labour costs.
- *
+ * Live route cost estimator with transportation + disposal sections.
  * In printMode the inputs are replaced with static text.
- * The onAssumptionsChange callback fires whenever the user edits a field
- * so parent components (e.g. CSV export) can capture current values.
+ * The onAssumptionsChange callback fires on any input change so parents
+ * (e.g. CSV export) can capture current assumption values.
  */
 
 import { useState } from "react";
+import type { RouteStop } from "@/types";
 
 export type CostAssumptions = {
   serviceMinPerStop: number;
   mpg: number;
   fuelPricePerGallon: number;
   laborRatePerHour: number;
+  lbsPerYard: number;
+  disposalCostPerTon: number;
 };
 
 export const DEFAULTS: CostAssumptions = {
@@ -25,11 +26,14 @@ export const DEFAULTS: CostAssumptions = {
   mpg: 8,
   fuelPricePerGallon: 4.5,
   laborRatePerHour: 35,
+  lbsPerYard: 300,
+  disposalCostPerTon: 85,
 };
 
 type Props = {
   totalMiles: number;
   stopCount: number;
+  stops?: RouteStop[];
   isEstimated?: boolean;
   printMode?: boolean;
   onAssumptionsChange?: (a: CostAssumptions) => void;
@@ -38,43 +42,42 @@ type Props = {
 export function RouteCostCalculator({
   totalMiles,
   stopCount,
+  stops = [],
   isEstimated = false,
   printMode = false,
   onAssumptionsChange,
 }: Props) {
-  // String state for inputs — prevents clearing/retyping issues
+  // Transportation assumptions — string state so inputs edit cleanly
   const [serviceTimeStr, setServiceTimeStr] = useState("15");
   const [mpgStr,         setMpgStr]         = useState("8");
   const [fuelPriceStr,   setFuelPriceStr]   = useState("4.50");
   const [laborRateStr,   setLaborRateStr]   = useState("35");
+  // Disposal assumptions
+  const [lbsPerYardStr,       setLbsPerYardStr]       = useState("300");
+  const [disposalPerTonStr,   setDisposalPerTonStr]   = useState("85");
 
-  // Parse for calculations — guard against empty/invalid
-  const serviceTime = Math.max(0,   parseFloat(serviceTimeStr) || 0);
-  const mpg         = Math.max(0.1, parseFloat(mpgStr)         || 0.1);
-  const fuelPrice   = Math.max(0,   parseFloat(fuelPriceStr)   || 0);
-  const laborRate   = Math.max(0,   parseFloat(laborRateStr)   || 0);
+  // Parsed values for calculations
+  const serviceTime      = Math.max(0,   parseFloat(serviceTimeStr)    || 0);
+  const mpg              = Math.max(0.1, parseFloat(mpgStr)            || 0.1);
+  const fuelPrice        = Math.max(0,   parseFloat(fuelPriceStr)      || 0);
+  const laborRate        = Math.max(0,   parseFloat(laborRateStr)      || 0);
+  const lbsPerYard       = Math.max(0,   parseFloat(lbsPerYardStr)     || 0);
+  const disposalPerTon   = Math.max(0,   parseFloat(disposalPerTonStr) || 0);
 
   function fireCallback() {
     onAssumptionsChange?.({
-      serviceMinPerStop:   Math.max(0,   parseFloat(serviceTimeStr) || 0),
-      mpg:                 Math.max(0.1, parseFloat(mpgStr)         || 0.1),
-      fuelPricePerGallon:  Math.max(0,   parseFloat(fuelPriceStr)   || 0),
-      laborRatePerHour:    Math.max(0,   parseFloat(laborRateStr)   || 0),
+      serviceMinPerStop:   Math.max(0,   parseFloat(serviceTimeStr)    || 0),
+      mpg:                 Math.max(0.1, parseFloat(mpgStr)            || 0.1),
+      fuelPricePerGallon:  Math.max(0,   parseFloat(fuelPriceStr)      || 0),
+      laborRatePerHour:    Math.max(0,   parseFloat(laborRateStr)      || 0),
+      lbsPerYard:          Math.max(0,   parseFloat(lbsPerYardStr)     || 0),
+      disposalCostPerTon:  Math.max(0,   parseFloat(disposalPerTonStr) || 0),
     });
   }
 
-  function blurClean(
-    val: string,
-    setter: (s: string) => void,
-    min = 0,
-    fallback = "0"
-  ) {
+  function blurClean(val: string, setter: (s: string) => void, min = 0, fallback = "0") {
     const v = parseFloat(val);
-    if (!isNaN(v) && v >= min) {
-      setter(String(v));
-    } else {
-      setter(fallback);
-    }
+    setter(!isNaN(v) && v >= min ? String(v) : fallback);
     fireCallback();
   }
 
@@ -83,10 +86,12 @@ export function RouteCostCalculator({
     setMpgStr("8");
     setFuelPriceStr("4.50");
     setLaborRateStr("35");
+    setLbsPerYardStr("300");
+    setDisposalPerTonStr("85");
     onAssumptionsChange?.(DEFAULTS);
   }
 
-  // ── Derived calculations ────────────────────────────────────────────────────
+  // ── Transportation calculations ─────────────────────────────────────────────
   const AVG_SPEED_MPH = 25;
   const driveMin    = (totalMiles / AVG_SPEED_MPH) * 60;
   const serviceMin  = stopCount * serviceTime;
@@ -95,34 +100,32 @@ export function RouteCostCalculator({
   const gallons     = totalMiles / mpg;
   const fuelCost    = gallons * fuelPrice;
   const laborCost   = totalHrs * laborRate;
-  const totalCost   = fuelCost + laborCost;
-  const costPerStop = stopCount > 0 ? totalCost / stopCount : 0;
+  const transportCost = fuelCost + laborCost;
+  const costPerStop = stopCount > 0 ? transportCost / stopCount : 0;
 
-  function fmt(n: number, decimals = 2) {
-    return n.toFixed(decimals);
-  }
+  // ── Disposal calculations ───────────────────────────────────────────────────
+  const totalYards    = stops.reduce((sum, s) => sum + (s.yards ?? 0), 0);
+  const stopsWithYards = stops.filter((s) => s.yards !== undefined && s.yards > 0).length;
+  const hasYards      = stopsWithYards > 0;
+  const totalTons     = (totalYards * lbsPerYard) / 2000;
+  const disposalCost  = totalTons * disposalPerTon;
+  const grandTotal    = transportCost + (hasYards ? disposalCost : 0);
 
-  // ── Number input ─────────────────────────────────────────────────────────────
+  function fmt(n: number, decimals = 2) { return n.toFixed(decimals); }
+
+  // ── Sub-components ───────────────────────────────────────────────────────────
+
   function NumInput({
-    value,
-    onChange,
-    onBlurClean,
-    prefix,
-    suffix,
+    value, onChange, onBlurClean, prefix, suffix,
   }: {
-    value: string;
-    onChange: (s: string) => void;
-    onBlurClean: () => void;
-    prefix?: string;
-    suffix?: string;
+    value: string; onChange: (s: string) => void; onBlurClean: () => void;
+    prefix?: string; suffix?: string;
   }) {
     return (
       <div className="flex items-center gap-1">
         {prefix && <span className="text-xs text-gray-400">{prefix}</span>}
         <input
-          type="number"
-          min="0"
-          step="any"
+          type="number" min="0" step="any"
           value={value}
           onChange={(e) => onChange(e.target.value)}
           onBlur={onBlurClean}
@@ -133,49 +136,29 @@ export function RouteCostCalculator({
     );
   }
 
-  // ── Assumption field (input or static) ────────────────────────────────────────
   function Field({
-    label,
-    strValue,
-    numValue,
-    setStr,
-    onBlur,
-    prefix,
-    suffix,
+    label, strValue, numValue, setStr, onBlur, prefix, suffix,
   }: {
-    label: string;
-    strValue: string;
-    numValue: number;
-    setStr: (s: string) => void;
-    onBlur: () => void;
-    prefix?: string;
-    suffix?: string;
+    label: string; strValue: string; numValue: number;
+    setStr: (s: string) => void; onBlur: () => void;
+    prefix?: string; suffix?: string;
   }) {
     if (printMode) {
       return (
         <div>
           <p className="text-xs text-gray-500 mb-0.5">{label}</p>
-          <p className="text-sm font-medium text-gray-700">
-            {prefix}{numValue}{suffix}
-          </p>
+          <p className="text-sm font-medium text-gray-700">{prefix}{numValue}{suffix}</p>
         </div>
       );
     }
     return (
       <div>
         <label className="block text-xs text-gray-500 mb-1">{label}</label>
-        <NumInput
-          value={strValue}
-          onChange={setStr}
-          onBlurClean={onBlur}
-          prefix={prefix}
-          suffix={suffix}
-        />
+        <NumInput value={strValue} onChange={setStr} onBlurClean={onBlur} prefix={prefix} suffix={suffix} />
       </div>
     );
   }
 
-  // ── Stat cell ────────────────────────────────────────────────────────────────
   function Stat({ label, value, sub }: { label: string; value: string; sub?: string }) {
     return (
       <div className="bg-white rounded-lg border border-gray-100 px-3 py-2.5">
@@ -190,13 +173,10 @@ export function RouteCostCalculator({
     <div className="rounded-xl border border-gray-200 overflow-hidden">
       {/* Header */}
       <div className="bg-[#2D6A4F] text-white px-5 py-3 flex items-center justify-between">
-        <div>
-          <h3 className="text-sm font-semibold">Route Cost Estimator</h3>
-        </div>
+        <h3 className="text-sm font-semibold">Route Cost Estimator</h3>
         {!printMode && (
           <button
-            type="button"
-            onClick={reset}
+            type="button" onClick={reset}
             className="text-xs text-white/70 hover:text-white transition-colors underline-offset-2 hover:underline"
           >
             Reset to defaults
@@ -204,10 +184,10 @@ export function RouteCostCalculator({
         )}
       </div>
 
-      <div className="p-5 bg-gray-50">
+      <div className="p-5 bg-gray-50 space-y-5">
         {/* Straight-line estimate warning */}
         {isEstimated && (
-          <div className="rounded-lg bg-amber-50 border border-amber-200 px-3 py-2 text-xs text-amber-700 mb-4 flex items-start gap-1.5">
+          <div className="rounded-lg bg-amber-50 border border-amber-200 px-3 py-2 text-xs text-amber-700 flex items-start gap-1.5">
             <span className="shrink-0">⚠</span>
             <span>
               Distance is a straight-line estimate — road distance unavailable.
@@ -216,61 +196,93 @@ export function RouteCostCalculator({
           </div>
         )}
 
-        {/* Assumptions grid */}
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-5">
-          <Field
-            label="Service time / stop"
-            strValue={serviceTimeStr}
-            numValue={serviceTime}
-            setStr={setServiceTimeStr}
-            onBlur={() => blurClean(serviceTimeStr, setServiceTimeStr, 0, "0")}
-            suffix=" min"
-          />
-          <Field
-            label="Fuel efficiency"
-            strValue={mpgStr}
-            numValue={mpg}
-            setStr={setMpgStr}
-            onBlur={() => blurClean(mpgStr, setMpgStr, 0.1, "0.1")}
-            suffix=" mpg"
-          />
-          <Field
-            label="Fuel price"
-            strValue={fuelPriceStr}
-            numValue={fuelPrice}
-            setStr={setFuelPriceStr}
-            onBlur={() => blurClean(fuelPriceStr, setFuelPriceStr, 0, "0")}
-            prefix="$"
-            suffix=" /gal"
-          />
-          <Field
-            label="Labour rate"
-            strValue={laborRateStr}
-            numValue={laborRate}
-            setStr={setLaborRateStr}
-            onBlur={() => blurClean(laborRateStr, setLaborRateStr, 0, "0")}
-            prefix="$"
-            suffix=" /hr"
-          />
+        {/* ── Transportation ───────────────────────────────────────────────── */}
+        <div>
+          <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-3">Transportation</p>
+
+          {/* Assumptions */}
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-4">
+            <Field label="Service time / stop" strValue={serviceTimeStr} numValue={serviceTime}
+              setStr={setServiceTimeStr} onBlur={() => blurClean(serviceTimeStr, setServiceTimeStr, 0, "0")} suffix=" min" />
+            <Field label="Fuel efficiency" strValue={mpgStr} numValue={mpg}
+              setStr={setMpgStr} onBlur={() => blurClean(mpgStr, setMpgStr, 0.1, "0.1")} suffix=" mpg" />
+            <Field label="Fuel price" strValue={fuelPriceStr} numValue={fuelPrice}
+              setStr={setFuelPriceStr} onBlur={() => blurClean(fuelPriceStr, setFuelPriceStr, 0, "0")} prefix="$" suffix=" /gal" />
+            <Field label="Labour rate" strValue={laborRateStr} numValue={laborRate}
+              setStr={setLaborRateStr} onBlur={() => blurClean(laborRateStr, setLaborRateStr, 0, "0")} prefix="$" suffix=" /hr" />
+          </div>
+
+          {/* Results */}
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+            <Stat label="Drive time"   value={`${fmt(driveMin, 0)} min`}   sub={`${fmt(totalMiles, 1)} mi @ ${AVG_SPEED_MPH} mph`} />
+            <Stat label="Service time" value={`${fmt(serviceMin, 0)} min`} sub={`${stopCount} stops × ${serviceTime} min`} />
+            <Stat label="Total time"   value={`${fmt(totalHrs, 1)} hrs`}   sub={`${fmt(totalMin, 0)} min`} />
+            <Stat label="Fuel cost"    value={`$${fmt(fuelCost)}`}         sub={`${fmt(gallons, 1)} gal`} />
+            <Stat label="Labour cost"  value={`$${fmt(laborCost)}`}        sub={`${fmt(totalHrs, 1)} hrs × $${laborRate}`} />
+            <Stat label="Cost / stop"  value={`$${fmt(costPerStop)}`}      sub={`${stopCount} stops`} />
+          </div>
         </div>
 
-        {/* Results grid */}
-        <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 mb-3">
-          <Stat label="Drive time"   value={`${fmt(driveMin, 0)} min`}   sub={`${fmt(totalMiles, 1)} mi @ ${AVG_SPEED_MPH} mph`} />
-          <Stat label="Service time" value={`${fmt(serviceMin, 0)} min`} sub={`${stopCount} stops × ${serviceTime} min`} />
-          <Stat label="Total time"   value={`${fmt(totalHrs, 1)} hrs`}   sub={`${fmt(totalMin, 0)} min`} />
-          <Stat label="Fuel cost"    value={`$${fmt(fuelCost)}`}         sub={`${fmt(gallons, 1)} gal`} />
-          <Stat label="Labour cost"  value={`$${fmt(laborCost)}`}        sub={`${fmt(totalHrs, 1)} hrs × $${laborRate}`} />
-          <Stat label="Cost / stop"  value={`$${fmt(costPerStop)}`}      sub={`${stopCount} stops`} />
+        {/* ── Disposal ─────────────────────────────────────────────────────── */}
+        <div>
+          <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-3">Disposal</p>
+
+          {hasYards ? (
+            <>
+              {/* Total yards summary */}
+              <div className="bg-white rounded-lg border border-gray-100 px-3 py-2.5 mb-4">
+                <p className="text-xs text-gray-500 mb-0.5">Total cubic yards collected</p>
+                <p className="text-base font-bold text-gray-900">{fmt(totalYards, 1)} yd³</p>
+                <p className="text-xs text-gray-400">{stopsWithYards} of {stopCount} stops have yards entered</p>
+              </div>
+
+              {/* Disposal assumptions */}
+              <div className="grid grid-cols-2 gap-3 mb-4">
+                <Field label="Est. density" strValue={lbsPerYardStr} numValue={lbsPerYard}
+                  setStr={setLbsPerYardStr} onBlur={() => blurClean(lbsPerYardStr, setLbsPerYardStr, 0, "0")} suffix=" lbs/yd³" />
+                <Field label="Disposal cost" strValue={disposalPerTonStr} numValue={disposalPerTon}
+                  setStr={setDisposalPerTonStr} onBlur={() => blurClean(disposalPerTonStr, setDisposalPerTonStr, 0, "0")} prefix="$" suffix=" /ton" />
+              </div>
+
+              {/* Disposal results */}
+              <div className="grid grid-cols-2 gap-2">
+                <Stat label="Total weight" value={`${fmt(totalTons, 1)} tons`}
+                  sub={`${fmt(totalYards, 1)} yd³ × ${lbsPerYard} lbs ÷ 2000`} />
+                <Stat label="Disposal cost" value={`$${fmt(disposalCost)}`}
+                  sub={`${fmt(totalTons, 1)} tons × $${disposalPerTon}/ton`} />
+              </div>
+            </>
+          ) : (
+            <p className="text-xs text-gray-400 italic">
+              Add cubic yards to stops to estimate disposal costs.
+            </p>
+          )}
         </div>
 
-        {/* Total */}
-        <div className="flex items-center justify-between rounded-lg bg-[#2D6A4F]/10 border border-[#2D6A4F]/20 px-4 py-3">
-          <span className="text-sm font-semibold text-[#2D6A4F]">Estimated total cost</span>
-          <span className="text-2xl font-bold text-[#2D6A4F]">${fmt(totalCost)}</span>
+        {/* ── Grand Total ──────────────────────────────────────────────────── */}
+        <div className="rounded-lg bg-[#2D6A4F]/10 border border-[#2D6A4F]/20 px-4 py-3 space-y-1.5">
+          {hasYards && (
+            <>
+              <div className="flex items-center justify-between text-sm text-gray-600">
+                <span>Transportation cost</span>
+                <span className="font-medium">${fmt(transportCost)}</span>
+              </div>
+              <div className="flex items-center justify-between text-sm text-gray-600">
+                <span>Disposal cost</span>
+                <span className="font-medium">${fmt(disposalCost)}</span>
+              </div>
+              <div className="border-t border-[#2D6A4F]/20 pt-1.5" />
+            </>
+          )}
+          <div className="flex items-center justify-between">
+            <span className="text-sm font-semibold text-[#2D6A4F]">
+              {hasYards ? "Total route cost" : "Estimated total cost"}
+            </span>
+            <span className="text-2xl font-bold text-[#2D6A4F]">${fmt(grandTotal)}</span>
+          </div>
         </div>
 
-        <p className="text-xs text-gray-400 mt-2">
+        <p className="text-xs text-gray-400">
           Estimates only. Does not include insurance, maintenance, or permit costs.
           Actual costs vary based on traffic, idle time, vehicle type, and local rates.
         </p>

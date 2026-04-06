@@ -224,6 +224,9 @@ export function RoutePrintClient({ route }: Props) {
                     <td className="px-4 py-3">
                       {stop.name && <p className="font-medium text-gray-700 mb-0.5">{stop.name}</p>}
                       <p className="text-gray-600">{stop.address}</p>
+                      {stop.yards !== undefined && (
+                        <p className="text-gray-400 text-xs mt-0.5">{stop.yards} yd³</p>
+                      )}
                     </td>
                     <td className="px-4 py-3 text-right text-gray-500">{dist}</td>
                   </tr>
@@ -261,6 +264,7 @@ export function RoutePrintClient({ route }: Props) {
             <RouteCostCalculator
               totalMiles={totalMi}
               stopCount={orderedStops.length}
+              stops={orderedStops}
               isEstimated={!route.total_distance_miles}
               printMode={true}
             />

@@ -56,26 +56,37 @@ function parseCsvLine(line: string): string[] {
   return parts;
 }
 
-function parseCsv(text: string): Array<{ address: string; name: string }> {
+function parseCsv(text: string): Array<{ address: string; name: string; yards?: number }> {
   const lines = text.split(/\r?\n/).filter((l) => l.trim());
   if (!lines.length) return [];
   const rows  = lines.map(parseCsvLine);
   const first = rows[0].map((c) => c.toLowerCase());
-  const hasHeader = first.some((c) => ["address","name","location","stop"].includes(c));
-  let addrIdx = 0, nameIdx = 1;
+  const hasHeader = first.some((c) => ["address","name","location","stop","yards"].includes(c));
+  let addrIdx = 0, nameIdx = 1, yardsIdx = -1;
   if (hasHeader) {
     const ai = first.findIndex((c) => ["address","location","stop"].includes(c));
     const ni = first.findIndex((c) => ["name","label"].includes(c));
+    const yi = first.findIndex((c) => ["yards","yd3","yd³","cubic yards"].includes(c));
     if (ai !== -1) addrIdx = ai;
     if (ni !== -1) nameIdx = ni;
+    if (yi !== -1) yardsIdx = yi;
+  } else {
+    yardsIdx = 2; // assume 3rd column is yards if no header
   }
   return (hasHeader ? rows.slice(1) : rows)
     .filter((r) => r[addrIdx]?.trim())
-    .map((r) => ({ address: r[addrIdx].trim(), name: r[nameIdx]?.trim() ?? "" }));
+    .map((r) => {
+      const yardsRaw = yardsIdx >= 0 ? parseFloat(r[yardsIdx] ?? "") : NaN;
+      return {
+        address: r[addrIdx].trim(),
+        name: r[nameIdx]?.trim() ?? "",
+        yards: !isNaN(yardsRaw) && yardsRaw >= 0 ? yardsRaw : undefined,
+      };
+    });
 }
 
 function downloadSampleCsv() {
-  const csv = `address,name\n123 Main Street Burlington VT,Stop 1\n456 Pine Ave Montpelier VT,Stop 2\n`;
+  const csv = `address,name,yards\n123 Main Street Burlington VT,Stop 1,4.5\n456 Pine Ave Montpelier VT,Stop 2,3\n`;
   const blob = new Blob([csv], { type: "text/csv" });
   const a    = document.createElement("a");
   a.href     = URL.createObjectURL(blob);
@@ -117,6 +128,7 @@ export function RouteBuilder({ userId: _userId, existingRoute }: Props) {
 
   const [newAddr,  setNewAddr]  = useState("");
   const [newName,  setNewName]  = useState("");
+  const [newYards, setNewYards] = useState("");
   const [csvStatus,setCsvStatus]= useState<string | null>(null);
 
   // ── Geocode batch progress ─────────────────────────────────────────────────
@@ -261,14 +273,16 @@ export function RouteBuilder({ userId: _userId, existingRoute }: Props) {
   async function addStop() {
     if (!newAddr.trim()) return;
     const id   = uuid();
+    const yardsVal = parseFloat(newYards);
     const stop: RouteStop = {
       id, address: newAddr.trim(),
       name: newName.trim() || `Stop ${stops.length + 1}`,
       geocoded: false,
+      yards: !isNaN(yardsVal) && yardsVal >= 0 ? yardsVal : undefined,
     };
     setStops((prev) => [...prev, stop]);
     setStopStates((prev) => ({ ...prev, [id]: { status: "loading" } }));
-    setNewAddr(""); setNewName("");
+    setNewAddr(""); setNewName(""); setNewYards("");
     markStale();
     // Geocode immediately
     await geocodeStop(id, stop.address);
@@ -294,6 +308,7 @@ export function RouteBuilder({ userId: _userId, existingRoute }: Props) {
         id: uuid(), address: r.address,
         name: r.name || `Stop ${stops.length + i + 1}`,
         geocoded: false,
+        yards: r.yards,
       }));
       setStops((prev) => [...prev, ...newStops]);
       setStopStates((prev) => {
@@ -480,6 +495,7 @@ export function RouteBuilder({ userId: _userId, existingRoute }: Props) {
       stops:                stops.map((s) => ({
         id: s.id, address: s.address, name: s.name,
         lat: s.lat, lng: s.lng, geocoded: s.geocoded,
+        yards: s.yards,
       })),
       optimized_order:      optimizedOrder,
       total_distance_miles: totalDistanceMiles,
@@ -597,14 +613,16 @@ export function RouteBuilder({ userId: _userId, existingRoute }: Props) {
                 onResolved={(addr, lat, lng) => {
                   // Directly add the stop with resolved coords
                   const id = uuid();
+                  const yardsVal = parseFloat(newYards);
                   const stop: RouteStop = {
                     id, address: addr,
                     name: newName.trim() || `Stop ${stops.length + 1}`,
                     lat, lng, geocoded: true,
+                    yards: !isNaN(yardsVal) && yardsVal >= 0 ? yardsVal : undefined,
                   };
                   setStops((prev) => [...prev, stop]);
                   setStopStates((prev) => ({ ...prev, [id]: { status: "ok" } }));
-                  setNewAddr(""); setNewName("");
+                  setNewAddr(""); setNewName(""); setNewYards("");
                   markStale();
                 }}
                 onCleared={() => {}}
@@ -616,6 +634,16 @@ export function RouteBuilder({ userId: _userId, existingRoute }: Props) {
               onChange={(e) => setNewName(e.target.value)}
               placeholder="Label (opt.)"
               className="w-28 flex h-9 rounded-md border border-gray-200 bg-white px-3 py-1 text-sm text-gray-900 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-[#2D6A4F]/30 focus:border-[#2D6A4F]"
+            />
+            <input
+              type="number"
+              value={newYards}
+              onChange={(e) => setNewYards(e.target.value)}
+              placeholder="yd³"
+              min="0"
+              step="0.5"
+              style={{ width: 80 }}
+              className="flex h-9 rounded-md border border-gray-200 bg-white px-3 py-1 text-sm text-gray-900 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-[#2D6A4F]/30 focus:border-[#2D6A4F]"
             />
             <Button
               type="button"
@@ -672,6 +700,9 @@ export function RouteBuilder({ userId: _userId, existingRoute }: Props) {
                     <div className="flex-1 min-w-0">
                       <p className="font-medium text-gray-800 truncate text-xs">{stop.name}</p>
                       <p className="text-gray-500 truncate text-xs">{stop.address}</p>
+                      {stop.yards !== undefined && (
+                        <p className="text-gray-400 text-xs">{stop.yards} yd³</p>
+                      )}
                       {ss.status === "error" && ss.error && (
                         <p className="text-red-500 text-xs truncate">{ss.error}</p>
                       )}
@@ -883,6 +914,7 @@ export function RouteBuilder({ userId: _userId, existingRoute }: Props) {
             <RouteCostCalculator
               totalMiles={costMiles}
               stopCount={stops.filter((s) => s.geocoded).length || stops.length}
+              stops={stops}
               isEstimated={costIsEstimated}
             />
           );

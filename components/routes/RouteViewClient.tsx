@@ -74,8 +74,8 @@ export function RouteViewClient({ route }: Props) {
 
   function exportCsv() {
     const rows: string[][] = [
-      ["Stop #", "Name", "Address", "Distance from Previous (mi)"],
-      ["0", "Start", route.start_address, "-"],
+      ["Stop #", "Name", "Address", "Distance from Previous (mi)", "Yards (yd³)"],
+      ["0", "Start", route.start_address, "-", "-"],
     ];
 
     let prevStop: RouteStop | null = null;
@@ -85,7 +85,13 @@ export function RouteViewClient({ route }: Props) {
         const d = distanceBetween(prevStop, stop);
         if (d !== null) dist = d.toFixed(2);
       }
-      rows.push([String(i + 1), stop.name ?? `Stop ${i + 1}`, stop.address, dist]);
+      rows.push([
+        String(i + 1),
+        stop.name ?? `Stop ${i + 1}`,
+        stop.address,
+        dist,
+        stop.yards !== undefined ? String(stop.yards) : "-",
+      ]);
       prevStop = stop;
     });
 
@@ -93,28 +99,32 @@ export function RouteViewClient({ route }: Props) {
     const lastStop = orderedStops[orderedStops.length - 1];
     let lastDist = "-";
     if (lastStop?.lat && lastStop?.lng) {
-      const fakeEnd: RouteStop = {
-        id: "end", address: route.end_address,
-        geocoded: false,
-      };
+      const fakeEnd: RouteStop = { id: "end", address: route.end_address, geocoded: false };
       const d = distanceBetween(lastStop, fakeEnd);
       if (d !== null) lastDist = d.toFixed(2);
     }
-    rows.push([String(orderedStops.length + 1), "End", route.end_address, lastDist]);
+    rows.push([String(orderedStops.length + 1), "End", route.end_address, lastDist, "-"]);
 
     // ── Cost analysis section ──────────────────────────────────────────────────
     const totalMi = route.total_distance_miles ?? (route.total_distance_km ? kmToMiles(route.total_distance_km) : null);
     if (totalMi !== null && orderedStops.length > 0) {
       const AVG_SPEED_MPH = 25;
       const a = assumptions;
-      const driveMin   = (totalMi / AVG_SPEED_MPH) * 60;
-      const serviceMin = orderedStops.length * a.serviceMinPerStop;
-      const totalMin   = driveMin + serviceMin;
-      const totalHrs   = totalMin / 60;
-      const gallons    = totalMi / a.mpg;
-      const fuelCost   = gallons * a.fuelPricePerGallon;
-      const laborCost  = totalHrs * a.laborRatePerHour;
-      const totalCost  = fuelCost + laborCost;
+      const driveMin    = (totalMi / AVG_SPEED_MPH) * 60;
+      const serviceMin  = orderedStops.length * a.serviceMinPerStop;
+      const totalMin    = driveMin + serviceMin;
+      const totalHrs    = totalMin / 60;
+      const gallons     = totalMi / a.mpg;
+      const fuelCost    = gallons * a.fuelPricePerGallon;
+      const laborCost   = totalHrs * a.laborRatePerHour;
+      const transportCost = fuelCost + laborCost;
+
+      const totalYards   = orderedStops.reduce((s, st) => s + (st.yards ?? 0), 0);
+      const hasYards     = orderedStops.some((st) => st.yards !== undefined && st.yards > 0);
+      const totalTons    = (totalYards * (a.lbsPerYard ?? 300)) / 2000;
+      const disposalCost = totalTons * (a.disposalCostPerTon ?? 85);
+      const grandTotal   = transportCost + (hasYards ? disposalCost : 0);
+
       rows.push(
         [],
         ["--- Cost Analysis ---"],
@@ -131,9 +141,23 @@ export function RouteViewClient({ route }: Props) {
         ["Total time (hrs)", totalHrs.toFixed(1)],
         ["Fuel cost ($)", fuelCost.toFixed(2)],
         ["Labour cost ($)", laborCost.toFixed(2)],
-        ["Total estimated cost ($)", totalCost.toFixed(2)],
-        ["Cost per stop ($)", (totalCost / orderedStops.length).toFixed(2)],
+        ["Transportation cost ($)", transportCost.toFixed(2)],
+        ["Cost per stop ($)", (transportCost / orderedStops.length).toFixed(2)],
       );
+
+      if (hasYards) {
+        rows.push(
+          [],
+          ["--- Disposal Analysis ---"],
+          ["Total cubic yards (yd³)", totalYards.toFixed(1)],
+          ["Est. density (lbs/yd³)", String(a.lbsPerYard ?? 300)],
+          ["Total estimated weight (tons)", totalTons.toFixed(2)],
+          ["Disposal cost per ton ($/ton)", String(a.disposalCostPerTon ?? 85)],
+          ["Disposal cost ($)", disposalCost.toFixed(2)],
+          [],
+          ["TOTAL ROUTE COST ($)", grandTotal.toFixed(2)],
+        );
+      }
     }
 
     const csv = rows.map((r) => r.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(",")).join("\n");
@@ -222,10 +246,13 @@ export function RouteViewClient({ route }: Props) {
                       <span className="text-xs font-bold text-blue-700">{i + 1}</span>
                     </div>
                     <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-2">
+                      <div className="flex items-center gap-2 flex-wrap">
                         <p className="text-sm font-medium text-gray-800 truncate">{stop.name || `Stop ${i + 1}`}</p>
                         {dist !== null && (
                           <span className="text-xs text-gray-400 shrink-0">{dist.toFixed(1)} mi</span>
+                        )}
+                        {stop.yards !== undefined && (
+                          <span className="text-xs text-gray-400 shrink-0">{stop.yards} yd³</span>
                         )}
                       </div>
                       <p className="text-xs text-gray-500 truncate">{stop.address}</p>
@@ -280,6 +307,7 @@ export function RouteViewClient({ route }: Props) {
               <RouteCostCalculator
                 totalMiles={totalMi}
                 stopCount={orderedStops.length}
+                stops={orderedStops}
                 isEstimated={!route.total_distance_miles}
                 onAssumptionsChange={setAssumptions}
               />
