@@ -9,9 +9,10 @@ import { NextRequest, NextResponse } from "next/server";
  * the API key out of client bundles.
  */
 export async function POST(req: NextRequest) {
-  const key = process.env.NEXT_PUBLIC_ORS_API_KEY;
+  const key = process.env.ORS_API_KEY || process.env.NEXT_PUBLIC_ORS_API_KEY;
   if (!key) {
-    return NextResponse.json({ error: "ORS API key not configured" }, { status: 503 });
+    console.error("[/api/ors/matrix] ORS API key not configured — set ORS_API_KEY in Vercel env vars");
+    return NextResponse.json({ error: "ORS_API_KEY not configured on server" }, { status: 500 });
   }
 
   let body: unknown;
@@ -39,8 +40,16 @@ export async function POST(req: NextRequest) {
     );
     clearTimeout(timeout);
 
-    const data = await orsRes.json();
-    return NextResponse.json(data, { status: orsRes.status });
+    const responseBody = await orsRes.text();
+    if (!orsRes.ok) {
+      console.error(`[/api/ors/matrix] ORS returned ${orsRes.status}: ${responseBody.slice(0, 300)}`);
+      return NextResponse.json(
+        { error: `ORS returned ${orsRes.status}`, body: responseBody.slice(0, 300) },
+        { status: orsRes.status }
+      );
+    }
+
+    return NextResponse.json(JSON.parse(responseBody), { status: 200 });
 
   } catch (err) {
     clearTimeout(timeout);
