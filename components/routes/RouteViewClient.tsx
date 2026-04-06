@@ -50,17 +50,33 @@ type Props = { route: SavedRoute };
 
 export function RouteViewClient({ route }: Props) {
   const router = useRouter();
-  const [copiedId,  setCopiedId]  = useState<string | null>(null);
-  const [deleting,  setDeleting]  = useState(false);
+  const [copiedId,    setCopiedId]    = useState<string | null>(null);
+  const [deleting,    setDeleting]    = useState(false);
   const [showConfirm, setShowConfirm] = useState(false);
   const [assumptions, setAssumptions] = useState<CostAssumptions>(DEFAULTS);
 
-  const orderedStops: RouteStop[] =
-    route.optimized_order
-      ? route.optimized_order.map((i) => route.stops[i]).filter(Boolean)
-      : route.stops;
+  // Mutable copy of stops so inline yards edits update the UI immediately
+  const initialStops: RouteStop[] = route.optimized_order
+    ? route.optimized_order.map((i) => route.stops[i]).filter(Boolean)
+    : route.stops;
+  const [orderedStops, setOrderedStops] = useState<RouteStop[]>(initialStops);
 
   const { startCoords, endCoords } = parseStartEnd(route);
+
+  // ── Inline yards editing with auto-save ───────────────────────────────────────
+
+  function updateStopYards(id: string, yards: number | undefined) {
+    setOrderedStops((prev) => prev.map((s) => s.id === id ? { ...s, yards } : s));
+  }
+
+  async function saveYardsOnBlur() {
+    // Persist the full stops array (with updated yards) back to the route
+    await fetch(`/api/routes/${route.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ stops: orderedStops }),
+    });
+  }
 
   // ── Copy address to clipboard ─────────────────────────────────────────────────
 
@@ -251,12 +267,23 @@ export function RouteViewClient({ route }: Props) {
                         {dist !== null && (
                           <span className="text-xs text-gray-400 shrink-0">{dist.toFixed(1)} mi</span>
                         )}
-                        {stop.yards !== undefined && (
-                          <span className="text-xs text-gray-400 shrink-0">{stop.yards} yd³</span>
-                        )}
                       </div>
                       <p className="text-xs text-gray-500 truncate">{stop.address}</p>
                     </div>
+                    {/* Inline yards input — auto-saves on blur */}
+                    <input
+                      type="number"
+                      min="0"
+                      step="0.5"
+                      placeholder="yd³"
+                      value={stop.yards ?? ""}
+                      onChange={(e) => updateStopYards(
+                        stop.id,
+                        e.target.value === "" ? undefined : parseFloat(e.target.value)
+                      )}
+                      onBlur={saveYardsOnBlur}
+                      className="w-16 h-7 text-sm border border-gray-200 rounded px-1 py-0.5 text-gray-600 placeholder:text-gray-300 focus:outline-none focus:ring-1 focus:ring-[#2D6A4F]/40 shrink-0"
+                    />
                     <button
                       onClick={() => copyAddress(stop.id, stop.address)}
                       className="shrink-0 text-gray-300 hover:text-[#2D6A4F] transition-colors"

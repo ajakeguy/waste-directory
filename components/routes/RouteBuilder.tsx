@@ -294,6 +294,10 @@ export function RouteBuilder({ userId: _userId, existingRoute }: Props) {
     markStale();
   }
 
+  function updateStopYards(id: string, yards: number | undefined) {
+    setStops((prev) => prev.map((s) => s.id === id ? { ...s, yards } : s));
+  }
+
   // ── CSV upload ─────────────────────────────────────────────────────────────
 
   function handleCsvFile(file: File) {
@@ -700,13 +704,25 @@ export function RouteBuilder({ userId: _userId, existingRoute }: Props) {
                     <div className="flex-1 min-w-0">
                       <p className="font-medium text-gray-800 truncate text-xs">{stop.name}</p>
                       <p className="text-gray-500 truncate text-xs">{stop.address}</p>
-                      {stop.yards !== undefined && (
-                        <p className="text-gray-400 text-xs">{stop.yards} yd³</p>
-                      )}
                       {ss.status === "error" && ss.error && (
                         <p className="text-red-500 text-xs truncate">{ss.error}</p>
                       )}
                     </div>
+                    {/* Inline yards input */}
+                    <input
+                      type="number"
+                      min="0"
+                      step="0.5"
+                      placeholder="yd³"
+                      value={stop.yards ?? ""}
+                      onChange={(e) => updateStopYards(
+                        stop.id,
+                        e.target.value === "" ? undefined : parseFloat(e.target.value)
+                      )}
+                      onClick={(e) => e.stopPropagation()}
+                      onMouseDown={(e) => e.stopPropagation()}
+                      className="w-14 h-6 text-xs border border-gray-200 rounded px-1 text-gray-600 placeholder:text-gray-300 focus:outline-none focus:ring-1 focus:ring-[#2D6A4F]/40 shrink-0 cursor-text"
+                    />
                     {/* Status icon */}
                     {ss.status === "loading" && <Loader2 className="size-3.5 text-gray-400 animate-spin shrink-0" />}
                     {ss.status === "ok"      && <span className="size-3.5 rounded-full bg-green-500 shrink-0 flex items-center justify-center"><svg viewBox="0 0 10 10" className="w-2 h-2 fill-white"><path d="M1.5 5l2.5 2.5 4.5-4.5" stroke="white" strokeWidth="1.5" fill="none" strokeLinecap="round"/></svg></span>}
