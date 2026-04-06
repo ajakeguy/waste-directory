@@ -9,8 +9,67 @@
  * (e.g. CSV export) can capture current assumption values.
  */
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import type { RouteStop } from "@/types";
+
+// ── Module-level sub-components (NOT nested) ─────────────────────────────────
+// Keeping these outside the parent prevents React from unmounting/remounting
+// them on every state change, which would cause inputs to lose focus.
+
+function NumInput({
+  value, onChange, onBlurClean, onFocus, prefix, suffix,
+}: {
+  value: string; onChange: (s: string) => void; onBlurClean: () => void;
+  onFocus?: () => void; prefix?: string; suffix?: string;
+}) {
+  return (
+    <div className="flex items-center gap-1">
+      {prefix && <span className="text-xs text-gray-400">{prefix}</span>}
+      <input
+        type="number" min="0" step="any"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        onBlur={onBlurClean}
+        onFocus={(e) => { e.target.select(); onFocus?.(); }}
+        className="w-full h-7 rounded border border-gray-200 bg-white px-2 text-sm text-gray-900 focus:outline-none focus:ring-1 focus:ring-[#2D6A4F]/40"
+      />
+      {suffix && <span className="text-xs text-gray-400">{suffix}</span>}
+    </div>
+  );
+}
+
+function Field({
+  label, strValue, numValue, setStr, onBlur, printMode, prefix, suffix,
+}: {
+  label: string; strValue: string; numValue: number;
+  setStr: (s: string) => void; onBlur: () => void;
+  printMode: boolean; prefix?: string; suffix?: string;
+}) {
+  if (printMode) {
+    return (
+      <div>
+        <p className="text-xs text-gray-500 mb-0.5">{label}</p>
+        <p className="text-sm font-medium text-gray-700">{prefix}{numValue}{suffix}</p>
+      </div>
+    );
+  }
+  return (
+    <div>
+      <label className="block text-xs text-gray-500 mb-1">{label}</label>
+      <NumInput value={strValue} onChange={setStr} onBlurClean={onBlur} prefix={prefix} suffix={suffix} />
+    </div>
+  );
+}
+
+function Stat({ label, value, sub }: { label: string; value: string; sub?: string }) {
+  return (
+    <div className="bg-white rounded-lg border border-gray-100 px-3 py-2.5">
+      <p className="text-xs text-gray-500 mb-0.5">{label}</p>
+      <p className="text-base font-bold text-gray-900">{value}</p>
+      {sub && <p className="text-xs text-gray-400">{sub}</p>}
+    </div>
+  );
+}
 
 export type CostAssumptions = {
   serviceMinPerStop: number;
@@ -48,13 +107,35 @@ export function RouteCostCalculator({
   onAssumptionsChange,
 }: Props) {
   // Transportation assumptions — string state so inputs edit cleanly
-  const [serviceTimeStr, setServiceTimeStr] = useState("15");
-  const [mpgStr,         setMpgStr]         = useState("8");
-  const [fuelPriceStr,   setFuelPriceStr]   = useState("4.50");
-  const [laborRateStr,   setLaborRateStr]   = useState("35");
+  const [serviceTimeStr, setServiceTimeStr] = useState(String(DEFAULTS.serviceMinPerStop));
+  const [mpgStr,         setMpgStr]         = useState(String(DEFAULTS.mpg));
+  const [fuelPriceStr,   setFuelPriceStr]   = useState(DEFAULTS.fuelPricePerGallon.toFixed(2));
+  const [laborRateStr,   setLaborRateStr]   = useState(String(DEFAULTS.laborRatePerHour));
   // Disposal assumptions
-  const [lbsPerYardStr,       setLbsPerYardStr]       = useState("300");
-  const [disposalPerTonStr,   setDisposalPerTonStr]   = useState("85");
+  const [lbsPerYardStr,     setLbsPerYardStr]     = useState(String(DEFAULTS.lbsPerYard));
+  const [disposalPerTonStr, setDisposalPerTonStr] = useState(String(DEFAULTS.disposalCostPerTon));
+  const [savedPrefs,        setSavedPrefs]        = useState<CostAssumptions | null>(null);
+  const [savingPrefs,       setSavingPrefs]       = useState(false);
+  const [prefsSaved,        setPrefsSaved]        = useState(false);
+
+  // Fetch user's saved preferences on mount
+  useEffect(() => {
+    if (printMode) return;
+    fetch("/api/route-preferences")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((prefs: CostAssumptions | null) => {
+        if (!prefs) return;
+        setSavedPrefs(prefs);
+        setServiceTimeStr(String(prefs.serviceMinPerStop));
+        setMpgStr(String(prefs.mpg));
+        setFuelPriceStr(prefs.fuelPricePerGallon.toFixed(2));
+        setLaborRateStr(String(prefs.laborRatePerHour));
+        setLbsPerYardStr(String(prefs.lbsPerYard));
+        setDisposalPerTonStr(String(prefs.disposalCostPerTon));
+      })
+      .catch(() => {/* not signed in — use defaults */});
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Parsed values for calculations
   const serviceTime      = Math.max(0,   parseFloat(serviceTimeStr)    || 0);
@@ -82,13 +163,40 @@ export function RouteCostCalculator({
   }
 
   function reset() {
-    setServiceTimeStr("15");
-    setMpgStr("8");
-    setFuelPriceStr("4.50");
-    setLaborRateStr("35");
-    setLbsPerYardStr("300");
-    setDisposalPerTonStr("85");
-    onAssumptionsChange?.(DEFAULTS);
+    const base = savedPrefs ?? DEFAULTS;
+    setServiceTimeStr(String(base.serviceMinPerStop));
+    setMpgStr(String(base.mpg));
+    setFuelPriceStr(base.fuelPricePerGallon.toFixed(2));
+    setLaborRateStr(String(base.laborRatePerHour));
+    setLbsPerYardStr(String(base.lbsPerYard));
+    setDisposalPerTonStr(String(base.disposalCostPerTon));
+    onAssumptionsChange?.(base);
+  }
+
+  async function saveAsDefaults() {
+    setSavingPrefs(true);
+    try {
+      const prefs: CostAssumptions = {
+        serviceMinPerStop:  serviceTime,
+        mpg,
+        fuelPricePerGallon: fuelPrice,
+        laborRatePerHour:   laborRate,
+        lbsPerYard,
+        disposalCostPerTon: disposalPerTon,
+      };
+      const res = await fetch("/api/route-preferences", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(prefs),
+      });
+      if (res.ok) {
+        setSavedPrefs(prefs);
+        setPrefsSaved(true);
+        setTimeout(() => setPrefsSaved(false), 2500);
+      }
+    } finally {
+      setSavingPrefs(false);
+    }
   }
 
   // ── Transportation calculations ─────────────────────────────────────────────
@@ -113,74 +221,29 @@ export function RouteCostCalculator({
 
   function fmt(n: number, decimals = 2) { return n.toFixed(decimals); }
 
-  // ── Sub-components ───────────────────────────────────────────────────────────
-
-  function NumInput({
-    value, onChange, onBlurClean, prefix, suffix,
-  }: {
-    value: string; onChange: (s: string) => void; onBlurClean: () => void;
-    prefix?: string; suffix?: string;
-  }) {
-    return (
-      <div className="flex items-center gap-1">
-        {prefix && <span className="text-xs text-gray-400">{prefix}</span>}
-        <input
-          type="number" min="0" step="any"
-          value={value}
-          onChange={(e) => onChange(e.target.value)}
-          onBlur={onBlurClean}
-          className="w-full h-7 rounded border border-gray-200 bg-white px-2 text-sm text-gray-900 focus:outline-none focus:ring-1 focus:ring-[#2D6A4F]/40"
-        />
-        {suffix && <span className="text-xs text-gray-400">{suffix}</span>}
-      </div>
-    );
-  }
-
-  function Field({
-    label, strValue, numValue, setStr, onBlur, prefix, suffix,
-  }: {
-    label: string; strValue: string; numValue: number;
-    setStr: (s: string) => void; onBlur: () => void;
-    prefix?: string; suffix?: string;
-  }) {
-    if (printMode) {
-      return (
-        <div>
-          <p className="text-xs text-gray-500 mb-0.5">{label}</p>
-          <p className="text-sm font-medium text-gray-700">{prefix}{numValue}{suffix}</p>
-        </div>
-      );
-    }
-    return (
-      <div>
-        <label className="block text-xs text-gray-500 mb-1">{label}</label>
-        <NumInput value={strValue} onChange={setStr} onBlurClean={onBlur} prefix={prefix} suffix={suffix} />
-      </div>
-    );
-  }
-
-  function Stat({ label, value, sub }: { label: string; value: string; sub?: string }) {
-    return (
-      <div className="bg-white rounded-lg border border-gray-100 px-3 py-2.5">
-        <p className="text-xs text-gray-500 mb-0.5">{label}</p>
-        <p className="text-base font-bold text-gray-900">{value}</p>
-        {sub && <p className="text-xs text-gray-400">{sub}</p>}
-      </div>
-    );
-  }
-
   return (
     <div className="rounded-xl border border-gray-200 overflow-hidden">
       {/* Header */}
       <div className="bg-[#2D6A4F] text-white px-5 py-3 flex items-center justify-between">
         <h3 className="text-sm font-semibold">Route Cost Estimator</h3>
         {!printMode && (
-          <button
-            type="button" onClick={reset}
-            className="text-xs text-white/70 hover:text-white transition-colors underline-offset-2 hover:underline"
-          >
-            Reset to defaults
-          </button>
+          <div className="flex items-center gap-3">
+            {prefsSaved && (
+              <span className="text-xs text-green-300">Saved!</span>
+            )}
+            <button
+              type="button" onClick={saveAsDefaults} disabled={savingPrefs}
+              className="text-xs text-white/70 hover:text-white transition-colors underline-offset-2 hover:underline disabled:opacity-50"
+            >
+              {savingPrefs ? "Saving…" : "Save as my defaults"}
+            </button>
+            <button
+              type="button" onClick={reset}
+              className="text-xs text-white/70 hover:text-white transition-colors underline-offset-2 hover:underline"
+            >
+              Reset
+            </button>
+          </div>
         )}
       </div>
 
@@ -203,13 +266,13 @@ export function RouteCostCalculator({
           {/* Assumptions */}
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-4">
             <Field label="Service time / stop" strValue={serviceTimeStr} numValue={serviceTime}
-              setStr={setServiceTimeStr} onBlur={() => blurClean(serviceTimeStr, setServiceTimeStr, 0, "0")} suffix=" min" />
+              setStr={setServiceTimeStr} onBlur={() => blurClean(serviceTimeStr, setServiceTimeStr, 0, "0")} printMode={printMode} suffix=" min" />
             <Field label="Fuel efficiency" strValue={mpgStr} numValue={mpg}
-              setStr={setMpgStr} onBlur={() => blurClean(mpgStr, setMpgStr, 0.1, "0.1")} suffix=" mpg" />
+              setStr={setMpgStr} onBlur={() => blurClean(mpgStr, setMpgStr, 0.1, "0.1")} printMode={printMode} suffix=" mpg" />
             <Field label="Fuel price" strValue={fuelPriceStr} numValue={fuelPrice}
-              setStr={setFuelPriceStr} onBlur={() => blurClean(fuelPriceStr, setFuelPriceStr, 0, "0")} prefix="$" suffix=" /gal" />
+              setStr={setFuelPriceStr} onBlur={() => blurClean(fuelPriceStr, setFuelPriceStr, 0, "0")} printMode={printMode} prefix="$" suffix=" /gal" />
             <Field label="Labour rate" strValue={laborRateStr} numValue={laborRate}
-              setStr={setLaborRateStr} onBlur={() => blurClean(laborRateStr, setLaborRateStr, 0, "0")} prefix="$" suffix=" /hr" />
+              setStr={setLaborRateStr} onBlur={() => blurClean(laborRateStr, setLaborRateStr, 0, "0")} printMode={printMode} prefix="$" suffix=" /hr" />
           </div>
 
           {/* Results */}
@@ -239,9 +302,9 @@ export function RouteCostCalculator({
               {/* Disposal assumptions */}
               <div className="grid grid-cols-2 gap-3 mb-4">
                 <Field label="Est. density" strValue={lbsPerYardStr} numValue={lbsPerYard}
-                  setStr={setLbsPerYardStr} onBlur={() => blurClean(lbsPerYardStr, setLbsPerYardStr, 0, "0")} suffix=" lbs/yd³" />
+                  setStr={setLbsPerYardStr} onBlur={() => blurClean(lbsPerYardStr, setLbsPerYardStr, 0, "0")} printMode={printMode} suffix=" lbs/yd³" />
                 <Field label="Disposal cost" strValue={disposalPerTonStr} numValue={disposalPerTon}
-                  setStr={setDisposalPerTonStr} onBlur={() => blurClean(disposalPerTonStr, setDisposalPerTonStr, 0, "0")} prefix="$" suffix=" /ton" />
+                  setStr={setDisposalPerTonStr} onBlur={() => blurClean(disposalPerTonStr, setDisposalPerTonStr, 0, "0")} printMode={printMode} prefix="$" suffix=" /ton" />
               </div>
 
               {/* Disposal results */}
