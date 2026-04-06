@@ -136,7 +136,11 @@ export default function RouteMap({
           iconSize:   [26, 26],
           iconAnchor: [13, 13],
         }),
-      }).addTo(map).bindPopup(`<strong>${stop.name || `Stop ${i + 1}`}</strong><br/>${stop.address}`)
+      }).addTo(map).bindPopup(
+        stop.yards
+          ? `<strong>${stop.name || `Stop ${i + 1}`}</strong><br/>${stop.address}<br/><span style="color:#2D6A4F;font-weight:bold">${stop.yards} yd³</span>`
+          : `<strong>${stop.name || `Stop ${i + 1}`}</strong><br/>${stop.address}`
+      )
       markersRef.current.push(m)
       bounds.push([stop.lat!, stop.lng!])
     })
