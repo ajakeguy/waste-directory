@@ -61,14 +61,14 @@ export async function fetchRoadRoute(
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Authorization: key,
+          "api-key": key,
         },
         body: JSON.stringify({ coordinates, instructions: false }),
       });
 
       if (!res.ok) {
         const body = await res.text().catch(() => "");
-        console.error(`[road-routing] chunk ${ci} returned HTTP ${res.status}: ${body.slice(0, 200)}`);
+        console.error(`[road-routing] chunk ${ci} failed — HTTP ${res.status}: ${body.slice(0, 300)}`);
         return null;
       }
 
@@ -98,8 +98,7 @@ export async function fetchRoadRoute(
   }
 
   const METERS_PER_MILE = 1609.344;
-  return {
-    coordinates: allCoords,
-    distanceMiles: totalDistanceMeters / METERS_PER_MILE,
-  };
+  const distanceMiles = totalDistanceMeters / METERS_PER_MILE;
+  console.log(`[road-routing] success: ${distanceMiles.toFixed(2)} miles road distance (${chunks.length} chunk${chunks.length !== 1 ? "s" : ""})`);
+  return { coordinates: allCoords, distanceMiles };
 }
