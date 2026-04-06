@@ -1,14 +1,8 @@
 import { notFound, redirect } from "next/navigation";
 import type { Metadata } from "next";
-import dynamic from "next/dynamic";
 import { createClient } from "@/lib/supabase/server";
-import type { SavedRoute, RouteStop } from "@/types";
-
-// RoutePrintClient handles map init, html2canvas capture, and window.print()
-const RoutePrintClient = dynamic(
-  () => import("@/components/routes/RoutePrintClient").then((m) => ({ default: m.RoutePrintClient })),
-  { ssr: false }
-);
+import type { SavedRoute } from "@/types";
+import RoutePrintClient from "@/components/routes/RoutePrintClient";
 
 type Props = { params: Promise<{ id: string }> };
 
@@ -40,17 +34,6 @@ export default async function PrintRoutePage({ params }: Props) {
     .maybeSingle();
 
   if (!data) notFound();
-  const route = data as SavedRoute;
 
-  const orderedStops: RouteStop[] = route.optimized_order
-    ? route.optimized_order.map((i) => route.stops[i]).filter(Boolean)
-    : route.stops;
-
-  const today = new Date().toLocaleDateString("en-US", {
-    month: "long", day: "numeric", year: "numeric",
-  });
-
-  return (
-    <RoutePrintClient route={route} orderedStops={orderedStops} today={today} />
-  );
+  return <RoutePrintClient route={data as SavedRoute} />;
 }
