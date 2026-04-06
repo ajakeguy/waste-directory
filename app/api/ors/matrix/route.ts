@@ -14,7 +14,12 @@ export async function POST(req: NextRequest) {
     console.error("[/api/ors/matrix] ORS API key not configured — set ORS_API_KEY in Vercel env vars");
     return NextResponse.json({ error: "ORS_API_KEY not configured on server" }, { status: 500 });
   }
-  console.log("[/api/ors/matrix] key length:", key.length, "first4:", key.slice(0, 4));
+
+  console.log(
+    "[/api/ors/matrix] key length:", key.length,
+    "first8:", key.slice(0, 8),
+    "headers:", JSON.stringify({ "api-key": key.slice(0, 4) + "..." })
+  );
 
   let body: unknown;
   try {
@@ -23,22 +28,22 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
   }
 
+  // Pass key as query param — more reliable than header in some server environments
+  const orsUrl = `https://api.openrouteservice.org/v2/matrix/driving-car?api_key=${key}`;
+  console.log("[/api/ors/matrix] fetching ORS (key redacted):", orsUrl.replace(key, "<KEY>"));
+
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 20_000);
 
   try {
-    const orsRes = await fetch(
-      "https://api.openrouteservice.org/v2/matrix/driving-car",
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "api-key": key,
-        },
-        body: JSON.stringify(body),
-        signal: controller.signal,
-      }
-    );
+    const orsRes = await fetch(orsUrl, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
     clearTimeout(timeout);
 
     const responseBody = await orsRes.text();
