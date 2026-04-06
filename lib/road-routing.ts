@@ -8,7 +8,7 @@
  */
 
 const PROFILES = ["driving-hgv", "driving-car"] as const;
-const TIMEOUT_MS = 10_000;
+const TIMEOUT_MS = 30_000;
 
 export type LatLng = { lat: number; lng: number };
 

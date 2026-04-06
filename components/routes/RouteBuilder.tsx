@@ -139,6 +139,7 @@ export function RouteBuilder({ userId: _userId, existingRoute }: Props) {
   const [estimateRunning,    setEstimateRunning]     = useState(false);
   const [estimateIsRoad,     setEstimateIsRoad]      = useState(false);
   const [estimateGeojson,    setEstimateGeojson]     = useState<{ coordinates: [number, number][] } | null>(null);
+  const [estimateOrsFailure, setEstimateOrsFailure]  = useState(false);
 
   // ── Save state ─────────────────────────────────────────────────────────────
   const [saving,  setSaving]  = useState(false);
@@ -180,6 +181,7 @@ export function RouteBuilder({ userId: _userId, existingRoute }: Props) {
     setOptimizeMsg(null);
     setEstimateIsRoad(false);
     setEstimateGeojson(null);
+    setEstimateOrsFailure(false);
   }
 
   // ── Start address resolved (from autocomplete or manual geocode) ───────────
@@ -429,6 +431,7 @@ export function RouteBuilder({ userId: _userId, existingRoute }: Props) {
     setCurrentRouteMiles(null);
     setEstimateIsRoad(false);
     setEstimateGeojson(null);
+    setEstimateOrsFailure(false);
 
     const coordsInOrder = geocodedInOrder.map((s) => ({ lat: s.lat!, lng: s.lng! }));
     const road = await fetchRoadRoute(startCoords, coordsInOrder, endCoords);
@@ -437,7 +440,7 @@ export function RouteBuilder({ userId: _userId, existingRoute }: Props) {
       setEstimateIsRoad(true);
       setEstimateGeojson({ coordinates: road.coordinates });
     } else {
-      // Haversine fallback: sum segment distances in current order
+      // ORS failed — compute haversine fallback and flag the failure
       let total = haversineDistance(startCoords.lat, startCoords.lng, coordsInOrder[0].lat, coordsInOrder[0].lng);
       for (let i = 0; i < coordsInOrder.length - 1; i++) {
         total += haversineDistance(coordsInOrder[i].lat, coordsInOrder[i].lng, coordsInOrder[i + 1].lat, coordsInOrder[i + 1].lng);
@@ -445,6 +448,7 @@ export function RouteBuilder({ userId: _userId, existingRoute }: Props) {
       total += haversineDistance(coordsInOrder[coordsInOrder.length - 1].lat, coordsInOrder[coordsInOrder.length - 1].lng, endCoords.lat, endCoords.lng);
       setCurrentRouteMiles(kmToMiles(total));
       setEstimateIsRoad(false);
+      setEstimateOrsFailure(true);
     }
     setEstimateRunning(false);
   }
@@ -725,11 +729,26 @@ export function RouteBuilder({ userId: _userId, existingRoute }: Props) {
             disabled={!canEstimate}
           >
             {estimateRunning ? (
-              <><Loader2 className="size-4 animate-spin" />Estimating…</>
+              <><Loader2 className="size-4 animate-spin" />Calculating road distance…</>
             ) : (
               <><MapPin className="size-4" />Estimate Current Route</>
             )}
           </Button>
+
+          {/* Loading note for large routes */}
+          {estimateRunning && (
+            <p className="text-xs text-gray-400 text-center -mt-1">
+              May take up to 30 seconds for large routes
+            </p>
+          )}
+
+          {/* ORS failure warning */}
+          {estimateOrsFailure && currentRouteMiles !== null && (
+            <div className="rounded-lg bg-amber-50 border border-amber-200 px-3 py-2 text-xs text-amber-700">
+              <AlertTriangle className="size-3 inline mr-1 shrink-0" />
+              Road distance unavailable — ORS timed out. Showing straight-line estimate instead.
+            </div>
+          )}
 
           {/* Current order estimate result (when no optimized result yet) */}
           {currentRouteMiles !== null && totalDistanceMiles === null && (
@@ -737,7 +756,7 @@ export function RouteBuilder({ userId: _userId, existingRoute }: Props) {
               <p className="text-xs text-gray-500 uppercase tracking-wide mb-0.5">Current route (entered order)</p>
               <p className="text-xl font-bold text-gray-700">{currentRouteMiles.toFixed(1)} mi</p>
               <p className="text-xs text-gray-400 mt-0.5">
-                {estimateIsRoad ? "road distance" : "est. straight-line"}
+                {estimateIsRoad ? "road distance" : "straight-line estimate"}
               </p>
             </div>
           )}
