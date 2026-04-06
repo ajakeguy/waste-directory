@@ -98,12 +98,7 @@ export async function fetchRoadDistanceMatrix(
   const allPoints: LatLng[] = [start, ...orderedStops, end];
   const n = allPoints.length;
 
-  // Matrix free-tier limit: 3,500 (origins × destinations). 58×58 = 3,364 ≤ limit.
-  // For larger routes fall back to chunked Directions (geometry not needed here).
-  if (n > 58) {
-    const result = await fetchRoadRoute(start, orderedStops, end);
-    return result?.distanceMiles ?? null;
-  }
+  console.log("[matrix] starting for", n, "points");
 
   const key = process.env.NEXT_PUBLIC_ORS_API_KEY;
   if (!key) {
@@ -111,14 +106,25 @@ export async function fetchRoadDistanceMatrix(
     return null;
   }
 
+  // Matrix free-tier limit: 3,500 (origins × destinations). 58×58 = 3,364 ≤ limit.
+  // For larger routes fall back to chunked Directions (geometry not needed here).
+  if (n > 58) {
+    console.log("[matrix] route too large for matrix API (" + n + " points), falling back to Directions");
+    const result = await fetchRoadRoute(start, orderedStops, end);
+    return result?.distanceMiles ?? null;
+  }
+
+  const MATRIX_URL = "https://api.openrouteservice.org/v2/matrix/driving-car";
   const locations = allPoints.map((p) => [p.lng, p.lat]);
+
+  console.log("[matrix] calling URL:", MATRIX_URL, "with", n, "points, key present:", !!key);
 
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 15_000);
 
   try {
     const res = await fetch(
-      "https://api.openrouteservice.org/v2/matrix/driving-car",
+      MATRIX_URL,
       {
         method: "POST",
         headers: {
