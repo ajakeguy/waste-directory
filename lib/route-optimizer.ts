@@ -148,6 +148,16 @@ function twoOpt(
   return best;
 }
 
+// ── Unit conversion ────────────────────────────────────────────────────────────
+
+export function kmToMiles(km: number): number {
+  return km * 0.621371;
+}
+
+export function formatMiles(miles: number, decimals = 1): string {
+  return `${miles.toFixed(decimals)} mi`;
+}
+
 // ── Public API ─────────────────────────────────────────────────────────────────
 
 export type OptimizeResult = {

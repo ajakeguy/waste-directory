@@ -15,7 +15,7 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { RouteMap } from "@/components/routes/RouteMap";
-import { haversineDistance } from "@/lib/route-optimizer";
+import { haversineDistance, kmToMiles } from "@/lib/route-optimizer";
 import type { SavedRoute, RouteStop } from "@/types";
 
 type LatLng = { lat: number; lng: number };
@@ -34,7 +34,7 @@ function parseStartEnd(route: SavedRoute): { startCoords: LatLng | null; endCoor
 
 function distanceBetween(a: RouteStop, b: RouteStop): number | null {
   if (!a.lat || !a.lng || !b.lat || !b.lng) return null;
-  return haversineDistance(a.lat, a.lng, b.lat, b.lng);
+  return kmToMiles(haversineDistance(a.lat, a.lng, b.lat, b.lng));
 }
 
 type Props = { route: SavedRoute };
@@ -64,7 +64,7 @@ export function RouteViewClient({ route }: Props) {
 
   function exportCsv() {
     const rows = [
-      ["Stop #", "Name", "Address", "Distance from Previous (km)"],
+      ["Stop #", "Name", "Address", "Distance from Previous (mi)"],
       ["0", "Start", route.start_address, "-"],
     ];
 
@@ -120,8 +120,8 @@ export function RouteViewClient({ route }: Props) {
             <h1 className="text-2xl font-bold text-gray-900">{route.route_name}</h1>
             <p className="text-gray-500 text-sm mt-0.5">
               {orderedStops.length} stop{orderedStops.length !== 1 ? "s" : ""}
-              {route.total_distance_km
-                ? ` · ${route.total_distance_km.toFixed(1)} km total`
+              {(route.total_distance_miles ?? (route.total_distance_km ? kmToMiles(route.total_distance_km) : null))
+                ? ` · ${(route.total_distance_miles ?? kmToMiles(route.total_distance_km!)).toFixed(1)} mi total`
                 : ""}
             </p>
           </div>
@@ -182,7 +182,7 @@ export function RouteViewClient({ route }: Props) {
                       <div className="flex items-center gap-2">
                         <p className="text-sm font-medium text-gray-800 truncate">{stop.name || `Stop ${i + 1}`}</p>
                         {dist !== null && (
-                          <span className="text-xs text-gray-400 shrink-0">{dist.toFixed(1)} km</span>
+                          <span className="text-xs text-gray-400 shrink-0">{dist.toFixed(1)} mi</span>
                         )}
                       </div>
                       <p className="text-xs text-gray-500 truncate">{stop.address}</p>
@@ -225,6 +225,7 @@ export function RouteViewClient({ route }: Props) {
               endCoords={endCoords}
               stops={route.stops}
               optimizedOrder={route.optimized_order ?? undefined}
+              roadGeojson={route.road_geometry ?? null}
               className="h-full w-full"
             />
           </div>
@@ -286,13 +287,15 @@ export function RouteViewClient({ route }: Props) {
           </div>
 
           {/* Stats */}
-          {route.total_distance_km && (
+          {(route.total_distance_miles ?? route.total_distance_km) && (
             <div className="rounded-lg border border-gray-200 bg-gray-50 p-3 mt-4 text-center">
-              <p className="text-xs text-gray-500 mb-0.5">Total Distance</p>
-              <p className="text-2xl font-bold text-[#2D6A4F]">
-                {route.total_distance_km.toFixed(1)}
+              <p className="text-xs text-gray-500 mb-0.5">
+                {route.total_distance_miles ? "Road Distance" : "Est. Distance"}
               </p>
-              <p className="text-xs text-gray-400">km</p>
+              <p className="text-2xl font-bold text-[#2D6A4F]">
+                {(route.total_distance_miles ?? kmToMiles(route.total_distance_km!)).toFixed(1)}
+              </p>
+              <p className="text-xs text-gray-400">miles</p>
             </div>
           )}
           <div className="rounded-lg border border-gray-200 bg-gray-50 p-3 text-center">

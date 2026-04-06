@@ -7,7 +7,8 @@
  *
  * Interactive Leaflet map loaded via CDN.
  * Shows start (green), stop (blue numbered) and end (red) markers.
- * When optimizedOrder is provided, draws a polyline connecting them in order.
+ * When roadGeojson is provided, draws the actual road path.
+ * Falls back to a straight-line dashed polyline if no road geometry.
  */
 
 import { useEffect, useRef, useState } from "react";
@@ -21,6 +22,8 @@ type Props = {
   endCoords?: LatLng | null;
   stops: RouteStop[];
   optimizedOrder?: number[] | null;
+  /** GeoJSON road geometry from ORS Directions API */
+  roadGeojson?: { coordinates: [number, number][] } | null;
   className?: string;
 };
 
@@ -50,6 +53,7 @@ export function RouteMap({
   endCoords,
   stops,
   optimizedOrder,
+  roadGeojson,
   className = "h-full w-full",
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -86,7 +90,7 @@ export function RouteMap({
     };
   }, [ready]);
 
-  // Re-draw markers and route polyline whenever data changes
+  // Re-draw markers and route whenever data changes
   useEffect(() => {
     if (!ready || !mapRef.current) return;
     const L = (window as any).L;
@@ -115,14 +119,10 @@ export function RouteMap({
 
     // Start marker
     if (startCoords) {
-      addMarker(
-        startCoords,
-        pinHtml("#22c55e", "S"),
-        `<strong>Start</strong>`
-      );
+      addMarker(startCoords, pinHtml("#22c55e", "S"), "<strong>Start</strong>");
     }
 
-    // Stop markers
+    // Stop markers (show in optimized order if available, else original order)
     const orderedIndices = optimizedOrder ?? stops.map((_, i) => i);
     orderedIndices.forEach((idx, rank) => {
       const stop = stops[idx];
@@ -136,36 +136,43 @@ export function RouteMap({
 
     // End marker
     if (endCoords) {
-      addMarker(
-        endCoords,
-        pinHtml("#EF4444", "E"),
-        `<strong>End</strong>`
-      );
+      addMarker(endCoords, pinHtml("#EF4444", "E"), "<strong>End</strong>");
     }
 
-    // Draw route polyline when we have an optimized order
-    if (optimizedOrder && startCoords && endCoords) {
+    // ── Route path ──────────────────────────────────────────────────────────────
+    if (roadGeojson?.coordinates?.length) {
+      // Real road path from ORS Directions API — solid line
+      const latlngs = roadGeojson.coordinates.map(
+        ([lng, lat]) => [lat, lng] as [number, number]
+      );
+      const poly = L.polyline(latlngs, {
+        color: "#2D6A4F",
+        weight: 4,
+        opacity: 0.85,
+      }).addTo(map);
+      layersRef.current.push(poly);
+    } else if (optimizedOrder && startCoords && endCoords) {
+      // Fallback: straight-line dashed polyline
       const latlngs: [number, number][] = [[startCoords.lat, startCoords.lng]];
       for (const idx of optimizedOrder) {
         const s = stops[idx];
         if (s?.lat && s?.lng) latlngs.push([s.lat, s.lng]);
       }
       latlngs.push([endCoords.lat, endCoords.lng]);
-
       const poly = L.polyline(latlngs, {
         color: "#2D6A4F",
         weight: 3,
-        opacity: 0.8,
+        opacity: 0.7,
         dashArray: "6 4",
       }).addTo(map);
       layersRef.current.push(poly);
     }
 
-    // Fit bounds to show all markers
+    // Fit map to all visible points
     if (bounds.length > 0) {
       map.fitBounds(bounds, { padding: [40, 40], maxZoom: 14 });
     }
-  }, [ready, startCoords, endCoords, stops, optimizedOrder]);
+  }, [ready, startCoords, endCoords, stops, optimizedOrder, roadGeojson]);
 
   return (
     <>

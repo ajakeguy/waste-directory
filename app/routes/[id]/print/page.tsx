@@ -22,9 +22,9 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
   return { title: data ? `${data.route_name} — Print` : "Route Print" };
 }
 
-function distKm(a: RouteStop, b: RouteStop): string {
+function distMi(a: RouteStop, b: RouteStop): string {
   if (!a.lat || !a.lng || !b.lat || !b.lng) return "—";
-  return haversineDistance(a.lat, a.lng, b.lat, b.lng).toFixed(1) + " km";
+  return (haversineDistance(a.lat, a.lng, b.lat, b.lng) * 0.621371).toFixed(1) + " mi";
 }
 
 export default async function PrintRoutePage({ params }: Props) {
@@ -76,8 +76,10 @@ export default async function PrintRoutePage({ params }: Props) {
           <h1 className="text-2xl font-bold mb-2">{route.route_name}</h1>
           <div className="flex flex-wrap gap-4 text-sm text-white/80">
             <span>{orderedStops.length} stops</span>
-            {route.total_distance_km && (
-              <span>{route.total_distance_km.toFixed(1)} km total</span>
+            {(route.total_distance_miles ?? route.total_distance_km) && (
+              <span>
+                {(route.total_distance_miles ?? (route.total_distance_km! * 0.621371)).toFixed(1)} mi total
+              </span>
             )}
             <span>Generated {today}</span>
           </div>
@@ -109,7 +111,7 @@ export default async function PrintRoutePage({ params }: Props) {
               {/* Stops */}
               {orderedStops.map((stop, i) => {
                 const prev = i === 0 ? null : orderedStops[i - 1];
-                const dist = prev ? distKm(prev, stop) : "—";
+                const dist = prev ? distMi(prev, stop) : "—";
                 return (
                   <tr key={stop.id} className={i % 2 === 0 ? "bg-white" : "bg-gray-50/50"}>
                     <td className="px-4 py-3">
@@ -139,9 +141,13 @@ export default async function PrintRoutePage({ params }: Props) {
           </table>
         </div>
 
-        {route.total_distance_km && (
+        {(route.total_distance_miles ?? route.total_distance_km) && (
           <p className="text-right text-sm text-gray-500 mt-3 pr-1">
-            Total route distance: <strong>{route.total_distance_km.toFixed(1)} km</strong>
+            Total route distance:{" "}
+            <strong>
+              {(route.total_distance_miles ?? (route.total_distance_km! * 0.621371)).toFixed(1)} mi
+            </strong>
+            {!route.total_distance_miles && <span className="text-gray-400 text-xs ml-1">(est.)</span>}
           </p>
         )}
 

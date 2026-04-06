@@ -3,64 +3,62 @@
 /**
  * components/routes/RouteBuilder.tsx
  *
- * Main client component for building and optimizing a route.
- * Left panel: inputs, stop list, CSV upload.
- * Right panel: live Leaflet map.
+ * Full route-building UI with:
+ * - Address autocomplete on all address fields
+ * - Live geocoding as stops are added
+ * - Re-optimize available whenever stops+start+end are geocoded
+ * - Stale-route warning when stops change after optimization
+ * - Real road routing via ORS Directions API after TSP
+ * - Distances shown in miles
  */
 
 import { useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
-  Plus, Trash2, Upload, Loader2, CheckCircle2, XCircle,
-  GripVertical, Download, MapPin, Save, Circle,
+  Plus, Trash2, Upload, Loader2, XCircle,
+  GripVertical, Download, MapPin, Save, AlertTriangle,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { RouteMap } from "@/components/routes/RouteMap";
-import { geocodeAddress, geocodeAddressesSequential } from "@/lib/geocoding";
-import { optimizeRoute } from "@/lib/route-optimizer";
+import { AddressAutocomplete, type GeocodeState } from "@/components/routes/AddressAutocomplete";
+import { geocodeAddress } from "@/lib/geocoding";
+import { optimizeRoute, kmToMiles } from "@/lib/route-optimizer";
+import { fetchRoadRoute } from "@/lib/road-routing";
 import type { RouteStop, SavedRoute } from "@/types";
 
 type LatLng = { lat: number; lng: number };
-type StopStatus = "idle" | "geocoding" | "ok" | "error";
 
-function uuid() {
-  return crypto.randomUUID();
-}
+function uuid() { return crypto.randomUUID(); }
 
-// ── CSV parser (no external library) ─────────────────────────────────────────────
+// ── CSV parser ────────────────────────────────────────────────────────────────
 
 function parseCsvLine(line: string): string[] {
   const parts: string[] = [];
-  let current = "";
-  let inQuotes = false;
+  let cur = "";
+  let inQ = false;
   for (const ch of line) {
-    if (ch === '"') { inQuotes = !inQuotes; continue; }
-    if (ch === "," && !inQuotes) { parts.push(current.trim()); current = ""; continue; }
-    current += ch;
+    if (ch === '"') { inQ = !inQ; continue; }
+    if (ch === "," && !inQ) { parts.push(cur.trim()); cur = ""; continue; }
+    cur += ch;
   }
-  parts.push(current.trim());
+  parts.push(cur.trim());
   return parts;
 }
 
 function parseCsv(text: string): Array<{ address: string; name: string }> {
   const lines = text.split(/\r?\n/).filter((l) => l.trim());
-  if (lines.length === 0) return [];
-  const rows = lines.map(parseCsvLine);
+  if (!lines.length) return [];
+  const rows  = lines.map(parseCsvLine);
   const first = rows[0].map((c) => c.toLowerCase());
-  const hasHeader = first.some((c) => ["address", "name", "location", "stop"].includes(c));
-
-  let addrIdx = 0;
-  let nameIdx = 1;
+  const hasHeader = first.some((c) => ["address","name","location","stop"].includes(c));
+  let addrIdx = 0, nameIdx = 1;
   if (hasHeader) {
-    const ai = first.findIndex((c) => ["address", "location", "stop"].includes(c));
-    const ni = first.findIndex((c) => ["name", "label"].includes(c));
+    const ai = first.findIndex((c) => ["address","location","stop"].includes(c));
+    const ni = first.findIndex((c) => ["name","label"].includes(c));
     if (ai !== -1) addrIdx = ai;
     if (ni !== -1) nameIdx = ni;
   }
-
-  const dataRows = hasHeader ? rows.slice(1) : rows;
-  return dataRows
+  return (hasHeader ? rows.slice(1) : rows)
     .filter((r) => r[addrIdx]?.trim())
     .map((r) => ({ address: r[addrIdx].trim(), name: r[nameIdx]?.trim() ?? "" }));
 }
@@ -68,33 +66,15 @@ function parseCsv(text: string): Array<{ address: string; name: string }> {
 function downloadSampleCsv() {
   const csv = `address,name\n123 Main Street Burlington VT,Stop 1\n456 Pine Ave Montpelier VT,Stop 2\n`;
   const blob = new Blob([csv], { type: "text/csv" });
-  const a = document.createElement("a");
-  a.href = URL.createObjectURL(blob);
+  const a    = document.createElement("a");
+  a.href     = URL.createObjectURL(blob);
   a.download = "route-stops-template.csv";
   a.click();
 }
 
-// ── Stop status icon ──────────────────────────────────────────────────────────
-
-function StopStatusIcon({ status, error }: { status: StopStatus; error?: string }) {
-  if (status === "geocoding") {
-    return <Loader2 className="size-3.5 text-gray-400 animate-spin shrink-0" />;
-  }
-  if (status === "ok") {
-    return <CheckCircle2 className="size-3.5 text-green-500 shrink-0" />;
-  }
-  if (status === "error") {
-    return (
-      <span title={error ?? "Geocoding failed"} className="cursor-help shrink-0">
-        <XCircle className="size-3.5 text-red-400" />
-      </span>
-    );
-  }
-  // idle — grey dot
-  return <Circle className="size-3 text-gray-300 shrink-0" />;
-}
-
 // ── Component ─────────────────────────────────────────────────────────────────
+
+type StopGeoState = { status: GeocodeState; error?: string };
 
 type Props = { userId: string; existingRoute?: SavedRoute };
 
@@ -105,159 +85,183 @@ export function RouteBuilder({ userId: _userId, existingRoute }: Props) {
   const dragIdx     = useRef<number | null>(null);
   const isEdit = !!existingRoute;
 
-  // ── Form state
-  const [routeName,    setRouteName]    = useState(existingRoute?.route_name    ?? "");
-  const [startAddress, setStartAddress] = useState(existingRoute?.start_address ?? "");
-  const [startCoords,  setStartCoords]  = useState<LatLng | null>(null);
-  const [startStatus,  setStartStatus]  = useState<StopStatus>(
-    existingRoute?.start_address ? "idle" : "idle"
-  );
-  const [startError,   setStartError]   = useState<string | null>(null);
+  // ── Route / address state ──────────────────────────────────────────────────
+  const [routeName,    setRouteName]   = useState(existingRoute?.route_name    ?? "");
+  const [startAddress, setStartAddress]= useState(existingRoute?.start_address ?? "");
+  const [startCoords,  setStartCoords] = useState<LatLng | null>(null);
+  const [startState,   setStartState]  = useState<StopGeoState>({ status: "idle" });
 
-  const [endAddress,   setEndAddress]   = useState(existingRoute?.end_address ?? "");
-  const [endCoords,    setEndCoords]    = useState<LatLng | null>(null);
-  const [endStatus,    setEndStatus]    = useState<StopStatus>("idle");
-  const [endError,     setEndError]     = useState<string | null>(null);
+  const [endAddress,   setEndAddress]  = useState(existingRoute?.end_address   ?? "");
+  const [endCoords,    setEndCoords]   = useState<LatLng | null>(null);
+  const [endState,     setEndState]    = useState<StopGeoState>({ status: "idle" });
 
-  const [stops,        setStops]        = useState<RouteStop[]>(existingRoute?.stops ?? []);
-  const [stopStatuses, setStopStatuses] = useState<Record<string, StopStatus>>(() => {
-    const init: Record<string, StopStatus> = {};
+  const [stops,        setStops]       = useState<RouteStop[]>(existingRoute?.stops ?? []);
+  const [stopStates,   setStopStates]  = useState<Record<string, StopGeoState>>(() => {
+    const m: Record<string, StopGeoState> = {};
     for (const s of (existingRoute?.stops ?? [])) {
-      init[s.id] = s.geocoded ? "ok" : "idle";
+      m[s.id] = { status: s.geocoded ? "ok" : "idle" };
     }
-    return init;
+    return m;
   });
-  const [stopErrors,   setStopErrors]   = useState<Record<string, string>>({});
 
-  const [newAddr,      setNewAddr]      = useState("");
-  const [newName,      setNewName]      = useState("");
+  const [newAddr,  setNewAddr]  = useState("");
+  const [newName,  setNewName]  = useState("");
+  const [csvStatus,setCsvStatus]= useState<string | null>(null);
 
-  // ── Progress / results
+  // ── Geocode batch progress ─────────────────────────────────────────────────
   const [geocodeProgress, setGeocodeProgress] = useState<{ done: number; total: number } | null>(null);
-  const [optimizing,      setOptimizing]      = useState(false);
-  const [optimizedOrder,  setOptimizedOrder]  = useState<number[] | null>(existingRoute?.optimized_order ?? null);
-  const [totalDistanceKm, setTotalDistanceKm] = useState<number | null>(existingRoute?.total_distance_km ?? null);
-  const [saving,    setSaving]    = useState(false);
-  const [savedId,   setSavedId]   = useState<string | null>(existingRoute?.id ?? null);
-  const [error,     setError]     = useState<string | null>(null);
-  const [csvStatus, setCsvStatus] = useState<string | null>(null);
 
-  // ── Geocode helpers ───────────────────────────────────────────────────────────
+  // ── Optimization state ─────────────────────────────────────────────────────
+  const [optimizing,      setOptimizing]     = useState(false);
+  const [optimizedOrder,  setOptimizedOrder] = useState<number[] | null>(existingRoute?.optimized_order ?? null);
+  const [roadGeojson,     setRoadGeojson]    = useState<{ coordinates: [number, number][] } | null>(
+    existingRoute?.road_geometry ?? null
+  );
+  const [totalDistanceMiles, setTotalDistanceMiles] = useState<number | null>(
+    existingRoute?.total_distance_miles ?? null
+  );
+  const [roadFetching, setRoadFetching]  = useState(false);
+  const [isStale,      setIsStale]       = useState(false);
 
-  async function geocodeStart() {
-    if (!startAddress.trim() || startStatus === "geocoding") return;
-    setStartStatus("geocoding");
-    setStartError(null);
+  // ── Save state ─────────────────────────────────────────────────────────────
+  const [saving,  setSaving]  = useState(false);
+  const [savedId, setSavedId] = useState<string | null>(existingRoute?.id ?? null);
+  const [error,   setError]   = useState<string | null>(null);
+
+  // ── Helpers: mark route stale when stops change ────────────────────────────
+
+  function markStale() {
+    if (optimizedOrder) {
+      setIsStale(true);
+      setRoadGeojson(null);  // clear road line so map doesn't show stale route
+    }
+    setOptimizedOrder(null);
+    setTotalDistanceMiles(null);
+  }
+
+  // ── Start address resolved (from autocomplete or manual geocode) ───────────
+
+  function resolveStart(address: string, lat: number, lng: number) {
+    setStartAddress(address);
+    setStartCoords({ lat, lng });
+    setStartState({ status: "ok" });
+    markStale();
+  }
+
+  async function geocodeStartManual() {
+    if (!startAddress.trim() || startState.status === "loading") return;
+    setStartState({ status: "loading" });
     const r = await geocodeAddress(startAddress);
     if (r.ok) {
       setStartCoords({ lat: r.lat, lng: r.lng });
-      setStartStatus("ok");
-      setStartError(null);
+      setStartState({ status: "ok" });
+      markStale();
     } else {
       setStartCoords(null);
-      setStartStatus("error");
-      setStartError(r.error);
-      setError(`Start address: ${r.error}`);
+      setStartState({ status: "error", error: r.error });
     }
   }
 
-  async function geocodeEnd() {
-    if (!endAddress.trim() || endStatus === "geocoding") return;
-    setEndStatus("geocoding");
-    setEndError(null);
+  // ── End address ────────────────────────────────────────────────────────────
+
+  function resolveEnd(address: string, lat: number, lng: number) {
+    setEndAddress(address);
+    setEndCoords({ lat, lng });
+    setEndState({ status: "ok" });
+    markStale();
+  }
+
+  async function geocodeEndManual() {
+    if (!endAddress.trim() || endState.status === "loading") return;
+    setEndState({ status: "loading" });
     const r = await geocodeAddress(endAddress);
     if (r.ok) {
       setEndCoords({ lat: r.lat, lng: r.lng });
-      setEndStatus("ok");
-      setEndError(null);
+      setEndState({ status: "ok" });
+      markStale();
     } else {
       setEndCoords(null);
-      setEndStatus("error");
-      setEndError(r.error);
-      setError(`End address: ${r.error}`);
+      setEndState({ status: "error", error: r.error });
     }
   }
 
-  /** Geocode a single stop by ID and update state immediately (live map update). */
-  async function geocodeStopById(id: string, address: string) {
-    setStopStatuses((prev) => ({ ...prev, [id]: "geocoding" }));
+  // ── Single stop geocode ────────────────────────────────────────────────────
+
+  async function geocodeStop(id: string, address: string) {
+    setStopStates((prev) => ({ ...prev, [id]: { status: "loading" } }));
     const r = await geocodeAddress(address);
     if (r.ok) {
       setStops((prev) =>
         prev.map((s) => s.id === id ? { ...s, lat: r.lat, lng: r.lng, geocoded: true } : s)
       );
-      setStopStatuses((prev) => ({ ...prev, [id]: "ok" }));
-      setStopErrors((prev) => { const n = { ...prev }; delete n[id]; return n; });
+      setStopStates((prev) => ({ ...prev, [id]: { status: "ok" } }));
     } else {
-      setStopStatuses((prev) => ({ ...prev, [id]: "error" }));
-      setStopErrors((prev) => ({ ...prev, [id]: r.error }));
+      setStopStates((prev) => ({ ...prev, [id]: { status: "error", error: r.error } }));
     }
   }
 
-  // ── Add a stop manually (auto-geocodes after adding) ─────────────────────────
+  // ── Stop resolved via autocomplete ─────────────────────────────────────────
+
+  function resolveStop(id: string, address: string, lat: number, lng: number) {
+    setStops((prev) =>
+      prev.map((s) => s.id === id ? { ...s, address, lat, lng, geocoded: true } : s)
+    );
+    setStopStates((prev) => ({ ...prev, [id]: { status: "ok" } }));
+    markStale();
+  }
+
+  // ── Add a stop manually ────────────────────────────────────────────────────
 
   async function addStop() {
     if (!newAddr.trim()) return;
-    const id = uuid();
+    const id   = uuid();
     const stop: RouteStop = {
-      id,
-      address:  newAddr.trim(),
-      name:     newName.trim() || `Stop ${stops.length + 1}`,
+      id, address: newAddr.trim(),
+      name: newName.trim() || `Stop ${stops.length + 1}`,
       geocoded: false,
     };
     setStops((prev) => [...prev, stop]);
-    setStopStatuses((prev) => ({ ...prev, [id]: "idle" }));
-    setNewAddr("");
-    setNewName("");
-    setOptimizedOrder(null);
-    setTotalDistanceKm(null);
-    // Auto-geocode the new stop immediately
-    await geocodeStopById(id, stop.address);
+    setStopStates((prev) => ({ ...prev, [id]: { status: "loading" } }));
+    setNewAddr(""); setNewName("");
+    markStale();
+    // Geocode immediately
+    await geocodeStop(id, stop.address);
   }
 
   function removeStop(id: string) {
     setStops((prev) => prev.filter((s) => s.id !== id));
-    setStopStatuses((prev) => { const n = { ...prev }; delete n[id]; return n; });
-    setStopErrors((prev) => { const n = { ...prev }; delete n[id]; return n; });
-    setOptimizedOrder(null);
-    setTotalDistanceKm(null);
+    setStopStates((prev) => { const n = { ...prev }; delete n[id]; return n; });
+    markStale();
   }
 
-  // ── CSV upload ────────────────────────────────────────────────────────────────
+  // ── CSV upload ─────────────────────────────────────────────────────────────
 
   function handleCsvFile(file: File) {
     if (!file.name.endsWith(".csv") && file.type !== "text/csv") {
-      setError("Please upload a .csv file.");
-      return;
+      setError("Please upload a .csv file."); return;
     }
     const reader = new FileReader();
     reader.onload = (e) => {
-      const text = e.target?.result as string;
-      const rows = parseCsv(text);
-      if (rows.length === 0) {
-        setCsvStatus("No valid rows found in the CSV file.");
-        return;
-      }
+      const rows = parseCsv(e.target?.result as string);
+      if (!rows.length) { setCsvStatus("No valid rows found."); return; }
       const newStops: RouteStop[] = rows.map((r, i) => ({
-        id:       uuid(),
-        address:  r.address,
-        name:     r.name || `Stop ${stops.length + i + 1}`,
+        id: uuid(), address: r.address,
+        name: r.name || `Stop ${stops.length + i + 1}`,
         geocoded: false,
       }));
       setStops((prev) => [...prev, ...newStops]);
-      setStopStatuses((prev) => {
+      setStopStates((prev) => {
         const n = { ...prev };
-        newStops.forEach((s) => { n[s.id] = "idle"; });
+        newStops.forEach((s) => { n[s.id] = { status: "idle" }; });
         return n;
       });
       setCsvStatus(`${rows.length} stops loaded from CSV`);
-      setOptimizedOrder(null);
-      setTotalDistanceKm(null);
+      markStale();
     };
     reader.readAsText(file);
   }
 
-  // ── Drag to reorder ───────────────────────────────────────────────────────────
+  // ── Drag to reorder ────────────────────────────────────────────────────────
 
   function onDragStart(idx: number) { dragIdx.current = idx; }
 
@@ -271,134 +275,122 @@ export function RouteBuilder({ userId: _userId, existingRoute }: Props) {
       return next;
     });
     dragIdx.current = null;
-    setOptimizedOrder(null);
-    setTotalDistanceKm(null);
+    markStale();
   }
 
-  // ── Geocode all un-geocoded stops (one-by-one, live map updates) ──────────────
+  // ── Geocode All ────────────────────────────────────────────────────────────
 
   async function geocodeAll() {
     const toGeocode = stops.filter((s) => !s.geocoded);
-    if (toGeocode.length === 0) return;
-
+    if (!toGeocode.length) return;
     setError(null);
     setGeocodeProgress({ done: 0, total: toGeocode.length });
-
-    // Mark all as "geocoding" upfront
-    setStopStatuses((prev) => {
+    setStopStates((prev) => {
       const n = { ...prev };
-      toGeocode.forEach((s) => { n[s.id] = "geocoding"; });
+      toGeocode.forEach((s) => { n[s.id] = { status: "loading" }; });
       return n;
     });
-
     let failCount = 0;
-
-    await geocodeAddressesSequential(
-      toGeocode.map((s) => s.address),
-      (i, result) => {
-        const stop = toGeocode[i];
-        if (result.ok) {
-          // Live update: add marker to map immediately
-          setStops((prev) =>
-            prev.map((s) =>
-              s.id === stop.id
-                ? { ...s, lat: result.lat, lng: result.lng, geocoded: true }
-                : s
-            )
-          );
-          setStopStatuses((prev) => ({ ...prev, [stop.id]: "ok" }));
-          setStopErrors((prev) => { const n = { ...prev }; delete n[stop.id]; return n; });
-        } else {
-          failCount++;
-          setStopStatuses((prev) => ({ ...prev, [stop.id]: "error" }));
-          setStopErrors((prev) => ({ ...prev, [stop.id]: result.error }));
-        }
-      },
-      (done, total) => setGeocodeProgress({ done, total })
-    );
-
+    for (let i = 0; i < toGeocode.length; i++) {
+      const stop = toGeocode[i];
+      const r = await geocodeAddress(stop.address);
+      if (r.ok) {
+        setStops((prev) =>
+          prev.map((s) => s.id === stop.id ? { ...s, lat: r.lat, lng: r.lng, geocoded: true } : s)
+        );
+        setStopStates((prev) => ({ ...prev, [stop.id]: { status: "ok" } }));
+      } else {
+        failCount++;
+        setStopStates((prev) => ({ ...prev, [stop.id]: { status: "error", error: r.error } }));
+      }
+      setGeocodeProgress({ done: i + 1, total: toGeocode.length });
+      if (i < toGeocode.length - 1) await new Promise((r) => setTimeout(r, 120));
+    }
     setGeocodeProgress(null);
-    setOptimizedOrder(null);
-    setTotalDistanceKm(null);
-
     if (failCount > 0) {
-      setError(
-        `${failCount} stop${failCount > 1 ? "s" : ""} could not be geocoded. ` +
-        `Hover the red ✗ icon on each stop to see the reason. ` +
-        `Check spelling or add a city/state/zip to the address.`
-      );
+      setError(`${failCount} stop(s) could not be geocoded. Check spelling or add city/state/zip.`);
     }
   }
 
-  // ── Optimize route ────────────────────────────────────────────────────────────
+  // ── Optimize + road route ──────────────────────────────────────────────────
 
   async function runOptimize() {
     if (!startCoords || !endCoords) {
-      setError("Geocode the start and end address first (tab out of each field).");
-      return;
+      setError("Geocode the start and end address first."); return;
     }
     const geocodedStops = stops.filter((s) => s.geocoded && s.lat && s.lng);
-    if (geocodedStops.length === 0) {
-      setError("No geocoded stops to optimize. Add stops and wait for geocoding to complete.");
-      return;
+    if (!geocodedStops.length) {
+      setError("No geocoded stops. Add stops and wait for geocoding."); return;
     }
 
     setOptimizing(true);
+    setIsStale(false);
     setError(null);
+    setRoadGeojson(null);
+    setTotalDistanceMiles(null);
 
+    // 1. TSP optimization (runs sync in setTimeout so UI updates first)
+    let fullIndices: number[] = [];
     await new Promise<void>((resolve) => {
       setTimeout(() => {
         const coords = geocodedStops.map((s) => ({ lat: s.lat!, lng: s.lng! }));
-        const { orderedIndices, totalDistanceKm: dist } = optimizeRoute(
-          coords,
-          startCoords,
-          endCoords
-        );
-        const fullIndices = orderedIndices.map((i) => {
+        const { orderedIndices } = optimizeRoute(coords, startCoords, endCoords);
+        fullIndices = orderedIndices.map((i) => {
           const gs = geocodedStops[i];
           return stops.findIndex((s) => s.id === gs.id);
         });
         setOptimizedOrder(fullIndices);
-        setTotalDistanceKm(dist);
         resolve();
       }, 50);
     });
-
     setOptimizing(false);
+
+    // 2. Fetch real road route from ORS
+    setRoadFetching(true);
+    const orderedCoords = fullIndices
+      .map((i) => stops[i])
+      .filter((s) => s?.lat && s?.lng)
+      .map((s) => ({ lat: s.lat!, lng: s.lng! }));
+
+    const road = await fetchRoadRoute(startCoords, orderedCoords, endCoords);
+    if (road) {
+      setRoadGeojson({ coordinates: road.coordinates });
+      setTotalDistanceMiles(road.distanceMiles);
+    } else {
+      // Fall back to haversine estimate converted to miles
+      const geocodedCoords = geocodedStops.map((s) => ({ lat: s.lat!, lng: s.lng! }));
+      const { orderedIndices, totalDistanceKm } = optimizeRoute(geocodedCoords, startCoords, endCoords);
+      void orderedIndices; // already set above
+      setTotalDistanceMiles(kmToMiles(totalDistanceKm));
+    }
+    setRoadFetching(false);
   }
 
-  // ── Save route ────────────────────────────────────────────────────────────────
+  // ── Save route ─────────────────────────────────────────────────────────────
 
   async function saveRoute() {
     if (!routeName.trim() || !startAddress.trim() || !endAddress.trim()) {
-      setError("Route name, start address and end address are required.");
-      return;
+      setError("Route name, start address and end address are required."); return;
     }
-    setSaving(true);
-    setError(null);
-
+    setSaving(true); setError(null);
     const payload = {
-      route_name:        routeName.trim(),
-      start_address:     startAddress.trim(),
-      end_address:       endAddress.trim(),
-      stops:             stops.map((s) => ({
+      route_name:           routeName.trim(),
+      start_address:        startAddress.trim(),
+      end_address:          endAddress.trim(),
+      stops:                stops.map((s) => ({
         id: s.id, address: s.address, name: s.name,
         lat: s.lat, lng: s.lng, geocoded: s.geocoded,
       })),
-      optimized_order:   optimizedOrder,
-      total_distance_km: totalDistanceKm,
-      status:            optimizedOrder ? "optimized" : "draft",
+      optimized_order:      optimizedOrder,
+      total_distance_miles: totalDistanceMiles,
+      road_geometry:        roadGeojson,
+      status:               optimizedOrder ? "optimized" : "draft",
     };
-
     try {
       const url    = (isEdit || savedId) ? `/api/routes/${savedId ?? existingRoute!.id}` : "/api/routes";
       const method = (isEdit || savedId) ? "PATCH" : "POST";
-      const res    = await fetch(url, {
-        method,
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
-      const json = await res.json();
+      const res    = await fetch(url, { method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+      const json   = await res.json();
       if (!res.ok) throw new Error(json.error ?? "Failed to save route");
       const id = savedId ?? json.id;
       setSavedId(id);
@@ -409,110 +401,127 @@ export function RouteBuilder({ userId: _userId, existingRoute }: Props) {
     }
   }
 
-  // ── Derived state ─────────────────────────────────────────────────────────────
+  // ── Derived state ──────────────────────────────────────────────────────────
 
-  const geocodedStopsCount = stops.filter((s) => s.geocoded).length;
-  const ungeocodedCount    = stops.filter((s) => !s.geocoded).length;
-  const anyGeocoding       = Object.values(stopStatuses).includes("geocoding") ||
-                             startStatus === "geocoding" || endStatus === "geocoding";
+  const geocodedCount  = stops.filter((s) => s.geocoded).length;
+  const ungeocodedCount= stops.filter((s) => !s.geocoded).length;
+  const anyLoading     = Object.values(stopStates).some((s) => s.status === "loading") ||
+                         startState.status === "loading" || endState.status === "loading";
 
-  const canOptimize =
-    geocodedStopsCount > 0 &&
-    !!startCoords &&
-    !!endCoords &&
-    !anyGeocoding;
+  // Enable optimize whenever start+end are geocoded AND at least 1 geocoded stop
+  const canOptimize = !!startCoords && !!endCoords && geocodedCount > 0 && !anyLoading && !optimizing && !roadFetching;
 
   // ── Render ─────────────────────────────────────────────────────────────────
 
   return (
     <div className="flex flex-col lg:flex-row gap-6 min-h-[70vh]">
 
-      {/* ── LEFT PANEL ──────────────────────────────────────────────────────── */}
-      <div className="w-full lg:w-[480px] shrink-0 space-y-6">
+      {/* ── LEFT PANEL ────────────────────────────────────────────────────── */}
+      <div className="w-full lg:w-[480px] shrink-0 space-y-5">
 
-        {/* Error banner */}
+        {/* Error */}
         {error && (
           <div className="rounded-lg bg-red-50 border border-red-200 px-4 py-3 text-sm text-red-700 flex items-start gap-2">
             <XCircle className="size-4 shrink-0 mt-0.5 text-red-400" />
             <span>{error}</span>
-            <button
-              type="button"
-              className="ml-auto shrink-0 text-red-300 hover:text-red-500"
-              onClick={() => setError(null)}
-            >
-              ×
-            </button>
+            <button type="button" className="ml-auto text-red-300 hover:text-red-500" onClick={() => setError(null)}>×</button>
           </div>
         )}
 
-        {/* Section 1: Route Info */}
+        {/* Stale warning */}
+        {isStale && (
+          <div className="rounded-lg bg-amber-50 border border-amber-200 px-4 py-3 text-sm text-amber-800 flex items-center gap-2">
+            <AlertTriangle className="size-4 text-amber-500 shrink-0" />
+            Stops have changed. Click <strong className="mx-0.5">Optimize Route</strong> to update the route.
+          </div>
+        )}
+
+        {/* Route Info */}
         <section className="bg-white rounded-xl border border-gray-200 p-5">
-          <h2 className="text-sm font-semibold text-gray-700 uppercase tracking-wide mb-3">
-            Route Info
-          </h2>
-          <Input
+          <h2 className="text-sm font-semibold text-gray-700 uppercase tracking-wide mb-3">Route Info</h2>
+          <input
+            type="text"
             value={routeName}
             onChange={(e) => setRouteName(e.target.value)}
             placeholder="Monday Commercial Route"
+            className="flex h-9 w-full rounded-md border border-gray-200 bg-white px-3 py-1 text-sm text-gray-900 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-[#2D6A4F]/30 focus:border-[#2D6A4F]"
           />
         </section>
 
-        {/* Section 2: Start Location */}
+        {/* Start Location */}
         <section className="bg-white rounded-xl border border-gray-200 p-5">
-          <h2 className="text-sm font-semibold text-gray-700 uppercase tracking-wide mb-3">
-            Starting Location (Depot / Garage)
-          </h2>
-          <div className="relative">
-            <Input
-              value={startAddress}
-              onChange={(e) => { setStartAddress(e.target.value); setStartCoords(null); setStartStatus("idle"); }}
-              onBlur={geocodeStart}
-              placeholder="123 Depot Road, Burlington, VT"
-              className="pr-8"
-            />
-            <div className="absolute right-3 top-1/2 -translate-y-1/2">
-              <StopStatusIcon status={startStatus} error={startError ?? undefined} />
+          <h2 className="text-sm font-semibold text-gray-700 uppercase tracking-wide mb-3">Starting Location (Depot / Garage)</h2>
+          <AddressAutocomplete
+            value={startAddress}
+            placeholder="123 Depot Road, Burlington, VT"
+            geocodeState={startState.status}
+            geocodeError={startState.error}
+            onChange={(v) => { setStartAddress(v); setStartCoords(null); setStartState({ status: "idle" }); }}
+            onResolved={resolveStart}
+            onCleared={() => { setStartCoords(null); setStartState({ status: "idle" }); markStale(); }}
+          />
+          {startState.status === "idle" && startAddress && !startCoords && (
+            <div className="flex items-center justify-between mt-2">
+              <p className="text-xs text-gray-400">No autocomplete match? </p>
+              <button
+                type="button"
+                onClick={geocodeStartManual}
+                className="text-xs text-[#2D6A4F] hover:underline"
+              >
+                Search this address →
+              </button>
             </div>
-          </div>
-          {startStatus === "error" && startError && (
-            <p className="text-xs text-red-500 mt-1">{startError}</p>
-          )}
-          {startStatus === "idle" && startAddress && (
-            <p className="text-xs text-gray-400 mt-1">Tab out to geocode</p>
           )}
         </section>
 
-        {/* Section 3: Stops */}
+        {/* Stops */}
         <section className="bg-white rounded-xl border border-gray-200 p-5">
           <h2 className="text-sm font-semibold text-gray-700 uppercase tracking-wide mb-3">
             Stops ({stops.length})
-            {geocodedStopsCount > 0 && (
+            {geocodedCount > 0 && (
               <span className="ml-2 text-xs font-normal text-gray-400 normal-case">
-                {geocodedStopsCount}/{stops.length} geocoded
+                {geocodedCount}/{stops.length} geocoded
               </span>
             )}
           </h2>
 
-          {/* Manual add */}
-          <div className="flex gap-2 mb-2">
-            <Input
-              value={newAddr}
-              onChange={(e) => setNewAddr(e.target.value)}
-              onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addStop(); } }}
-              placeholder="Stop address"
-              className="flex-1"
-            />
-            <Input
+          {/* Manual add with autocomplete */}
+          <div className="flex gap-2 mb-2 items-start">
+            <div className="flex-1">
+              <AddressAutocomplete
+                value={newAddr}
+                placeholder="Stop address"
+                geocodeState="idle"
+                onChange={setNewAddr}
+                onResolved={(addr, lat, lng) => {
+                  // Directly add the stop with resolved coords
+                  const id = uuid();
+                  const stop: RouteStop = {
+                    id, address: addr,
+                    name: newName.trim() || `Stop ${stops.length + 1}`,
+                    lat, lng, geocoded: true,
+                  };
+                  setStops((prev) => [...prev, stop]);
+                  setStopStates((prev) => ({ ...prev, [id]: { status: "ok" } }));
+                  setNewAddr(""); setNewName("");
+                  markStale();
+                }}
+                onCleared={() => {}}
+              />
+            </div>
+            <input
+              type="text"
               value={newName}
               onChange={(e) => setNewName(e.target.value)}
               placeholder="Label (opt.)"
-              className="w-32"
+              className="w-28 flex h-9 rounded-md border border-gray-200 bg-white px-3 py-1 text-sm text-gray-900 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-[#2D6A4F]/30 focus:border-[#2D6A4F]"
             />
             <Button
               type="button"
               onClick={addStop}
               size="sm"
-              className="bg-[#2D6A4F] hover:bg-[#245a42] text-white shrink-0"
+              className="bg-[#2D6A4F] hover:bg-[#245a42] text-white shrink-0 h-9"
+              title="Add stop (fallback if autocomplete didn't trigger)"
             >
               <Plus className="size-4" />
             </Button>
@@ -520,34 +529,22 @@ export function RouteBuilder({ userId: _userId, existingRoute }: Props) {
 
           {/* CSV zone */}
           <div
-            className="border-2 border-dashed border-gray-200 rounded-lg p-4 text-center cursor-pointer hover:border-[#2D6A4F]/40 hover:bg-gray-50 transition-colors mb-1"
+            className="border-2 border-dashed border-gray-200 rounded-lg p-3 text-center cursor-pointer hover:border-[#2D6A4F]/40 hover:bg-gray-50 transition-colors mb-1"
             onDragOver={(e) => e.preventDefault()}
-            onDrop={(e) => {
-              e.preventDefault();
-              const file = e.dataTransfer.files[0];
-              if (file) handleCsvFile(file);
-            }}
+            onDrop={(e) => { e.preventDefault(); const f = e.dataTransfer.files[0]; if (f) handleCsvFile(f); }}
             onClick={() => csvInputRef.current?.click()}
           >
             <Upload className="size-4 text-gray-400 mx-auto mb-1" />
-            <p className="text-xs text-gray-500">Drag & drop a CSV or click to upload</p>
+            <p className="text-xs text-gray-500">Drag & drop CSV or click to upload</p>
           </div>
-          <input
-            ref={csvInputRef}
-            type="file"
-            accept=".csv,text/csv"
-            className="hidden"
+          <input ref={csvInputRef} type="file" accept=".csv,text/csv" className="hidden"
             onChange={(e) => { const f = e.target.files?.[0]; if (f) handleCsvFile(f); e.target.value = ""; }}
           />
           <div className="flex items-center justify-between mt-1 mb-3">
             {csvStatus && <p className="text-xs text-[#2D6A4F]">{csvStatus}</p>}
-            <button
-              type="button"
-              onClick={downloadSampleCsv}
-              className="text-xs text-gray-400 hover:text-[#2D6A4F] flex items-center gap-1 ml-auto"
-            >
-              <Download className="size-3" />
-              Download template
+            <button type="button" onClick={downloadSampleCsv}
+              className="text-xs text-gray-400 hover:text-[#2D6A4F] flex items-center gap-1 ml-auto">
+              <Download className="size-3" /> Download template
             </button>
           </div>
 
@@ -557,8 +554,7 @@ export function RouteBuilder({ userId: _userId, existingRoute }: Props) {
           ) : (
             <div className="space-y-1 max-h-72 overflow-y-auto pr-1">
               {stops.map((stop, idx) => {
-                const status = stopStatuses[stop.id] ?? "idle";
-                const errMsg = stopErrors[stop.id];
+                const ss = stopStates[stop.id] ?? { status: "idle" };
                 return (
                   <div
                     key={stop.id}
@@ -567,9 +563,7 @@ export function RouteBuilder({ userId: _userId, existingRoute }: Props) {
                     onDragOver={(e) => e.preventDefault()}
                     onDrop={() => onDrop(idx)}
                     className={`flex items-center gap-2 rounded-lg border px-2 py-1.5 text-sm cursor-grab active:cursor-grabbing transition-colors ${
-                      status === "error"
-                        ? "border-red-200 bg-red-50"
-                        : "border-gray-100 bg-gray-50"
+                      ss.status === "error" ? "border-red-200 bg-red-50" : "border-gray-100 bg-gray-50"
                     }`}
                   >
                     <GripVertical className="size-3.5 text-gray-300 shrink-0" />
@@ -577,18 +571,17 @@ export function RouteBuilder({ userId: _userId, existingRoute }: Props) {
                     <div className="flex-1 min-w-0">
                       <p className="font-medium text-gray-800 truncate text-xs">{stop.name}</p>
                       <p className="text-gray-500 truncate text-xs">{stop.address}</p>
-                      {status === "error" && errMsg && (
-                        <p className="text-red-500 text-xs truncate" title={errMsg}>
-                          {errMsg}
-                        </p>
+                      {ss.status === "error" && ss.error && (
+                        <p className="text-red-500 text-xs truncate">{ss.error}</p>
                       )}
                     </div>
-                    <StopStatusIcon status={status} error={errMsg} />
-                    <button
-                      type="button"
-                      onClick={() => removeStop(stop.id)}
-                      className="text-gray-300 hover:text-red-400 transition-colors shrink-0"
-                    >
+                    {/* Status icon */}
+                    {ss.status === "loading" && <Loader2 className="size-3.5 text-gray-400 animate-spin shrink-0" />}
+                    {ss.status === "ok"      && <span className="size-3.5 rounded-full bg-green-500 shrink-0 flex items-center justify-center"><svg viewBox="0 0 10 10" className="w-2 h-2 fill-white"><path d="M1.5 5l2.5 2.5 4.5-4.5" stroke="white" strokeWidth="1.5" fill="none" strokeLinecap="round"/></svg></span>}
+                    {ss.status === "error"   && <XCircle className="size-3.5 text-red-400 shrink-0" title={ss.error} />}
+                    {ss.status === "idle"    && <span className="size-2.5 rounded-full border border-gray-300 shrink-0" />}
+                    <button type="button" onClick={() => removeStop(stop.id)}
+                      className="text-gray-300 hover:text-red-400 transition-colors shrink-0">
                       <Trash2 className="size-3.5" />
                     </button>
                   </div>
@@ -598,57 +591,44 @@ export function RouteBuilder({ userId: _userId, existingRoute }: Props) {
           )}
         </section>
 
-        {/* Section 4: End Location */}
+        {/* End Location */}
         <section className="bg-white rounded-xl border border-gray-200 p-5">
-          <h2 className="text-sm font-semibold text-gray-700 uppercase tracking-wide mb-3">
-            Disposal Facility / End Location
-          </h2>
-          <div className="relative">
-            <Input
-              value={endAddress}
-              onChange={(e) => { setEndAddress(e.target.value); setEndCoords(null); setEndStatus("idle"); }}
-              onBlur={geocodeEnd}
-              placeholder="789 Transfer Station Rd, Montpelier, VT"
-              className="pr-8"
-            />
-            <div className="absolute right-3 top-1/2 -translate-y-1/2">
-              <StopStatusIcon status={endStatus} error={endError ?? undefined} />
+          <h2 className="text-sm font-semibold text-gray-700 uppercase tracking-wide mb-3">Disposal Facility / End Location</h2>
+          <AddressAutocomplete
+            value={endAddress}
+            placeholder="789 Transfer Station Rd, Montpelier, VT"
+            geocodeState={endState.status}
+            geocodeError={endState.error}
+            onChange={(v) => { setEndAddress(v); setEndCoords(null); setEndState({ status: "idle" }); }}
+            onResolved={resolveEnd}
+            onCleared={() => { setEndCoords(null); setEndState({ status: "idle" }); markStale(); }}
+          />
+          {endState.status === "idle" && endAddress && !endCoords && (
+            <div className="flex items-center justify-between mt-2">
+              <p className="text-xs text-gray-400">No autocomplete match? </p>
+              <button type="button" onClick={geocodeEndManual} className="text-xs text-[#2D6A4F] hover:underline">
+                Search this address →
+              </button>
             </div>
-          </div>
-          {endStatus === "error" && endError && (
-            <p className="text-xs text-red-500 mt-1">{endError}</p>
-          )}
-          {endStatus === "idle" && endAddress && (
-            <p className="text-xs text-gray-400 mt-1">Tab out to geocode</p>
           )}
         </section>
 
-        {/* Section 5: Actions */}
+        {/* Actions */}
         <section className="bg-white rounded-xl border border-gray-200 p-5 space-y-2">
-          <h2 className="text-sm font-semibold text-gray-700 uppercase tracking-wide mb-3">
-            Actions
-          </h2>
+          <h2 className="text-sm font-semibold text-gray-700 uppercase tracking-wide mb-3">Actions</h2>
 
           {/* Geocode All */}
           <Button
-            type="button"
-            variant="outline"
+            type="button" variant="outline"
             className="w-full justify-start gap-2"
             onClick={geocodeAll}
-            disabled={stops.length === 0 || ungeocodedCount === 0 || !!geocodeProgress}
+            disabled={!stops.length || ungeocodedCount === 0 || !!geocodeProgress}
           >
             {geocodeProgress ? (
-              <>
-                <Loader2 className="size-4 animate-spin" />
-                Geocoding {geocodeProgress.done}/{geocodeProgress.total}…
-              </>
+              <><Loader2 className="size-4 animate-spin" />Geocoding {geocodeProgress.done}/{geocodeProgress.total}…</>
             ) : (
-              <>
-                <MapPin className="size-4" />
-                Geocode All Stops
-                {ungeocodedCount > 0 && (
-                  <span className="ml-auto text-xs text-gray-400">{ungeocodedCount} remaining</span>
-                )}
+              <><MapPin className="size-4" />Geocode All Stops
+                {ungeocodedCount > 0 && <span className="ml-auto text-xs text-gray-400">{ungeocodedCount} remaining</span>}
               </>
             )}
           </Button>
@@ -656,28 +636,25 @@ export function RouteBuilder({ userId: _userId, existingRoute }: Props) {
           {/* Optimize */}
           <Button
             type="button"
-            className="w-full justify-start gap-2 bg-[#2D6A4F] hover:bg-[#245a42] text-white"
+            className={`w-full justify-start gap-2 text-white ${isStale ? "bg-amber-600 hover:bg-amber-700" : "bg-[#2D6A4F] hover:bg-[#245a42]"}`}
             onClick={runOptimize}
-            disabled={!canOptimize || optimizing}
+            disabled={!canOptimize}
           >
-            {optimizing ? (
-              <>
-                <Loader2 className="size-4 animate-spin" />
-                Optimizing…
+            {(optimizing || roadFetching) ? (
+              <><Loader2 className="size-4 animate-spin" />
+                {optimizing ? "Optimizing stops…" : "Fetching road route…"}
               </>
             ) : (
-              <>
-                <MapPin className="size-4" />
-                Optimize Route
-                {!canOptimize && (
+              <><MapPin className="size-4" />
+                {isStale ? "Re-optimize Route" : "Optimize Route"}
+                {!canOptimize && !optimizing && !roadFetching && (
                   <span className="ml-auto text-xs text-white/60">
-                    {stops.length === 0
-                      ? "Add stops first"
-                      : !startCoords || !endCoords
-                      ? "Geocode start & end"
-                      : anyGeocoding
-                      ? "Geocoding in progress…"
-                      : "Geocode stops first"}
+                    {!stops.length ? "Add stops first"
+                      : !startCoords ? "Geocode start address"
+                      : !endCoords   ? "Geocode end address"
+                      : geocodedCount === 0 ? "Geocode stops first"
+                      : anyLoading ? "Geocoding…"
+                      : ""}
                   </span>
                 )}
               </>
@@ -685,40 +662,38 @@ export function RouteBuilder({ userId: _userId, existingRoute }: Props) {
           </Button>
 
           {/* Distance result */}
-          {totalDistanceKm !== null && (
+          {totalDistanceMiles !== null && (
             <div className="rounded-lg bg-[#2D6A4F]/5 border border-[#2D6A4F]/20 px-4 py-3 text-center">
-              <p className="text-xs text-gray-500 uppercase tracking-wide mb-0.5">Optimized distance</p>
+              <p className="text-xs text-gray-500 uppercase tracking-wide mb-0.5">
+                {roadGeojson ? "Road distance" : "Est. distance (straight line)"}
+              </p>
               <p className="text-2xl font-bold text-[#2D6A4F]">
-                {totalDistanceKm.toFixed(1)} km
+                {totalDistanceMiles.toFixed(1)} mi
               </p>
             </div>
           )}
 
           {/* Save */}
           <Button
-            type="button"
-            variant="outline"
+            type="button" variant="outline"
             className="w-full justify-start gap-2"
             onClick={saveRoute}
             disabled={saving || !routeName.trim() || !startAddress.trim() || !endAddress.trim()}
           >
-            {saving ? (
-              <><Loader2 className="size-4 animate-spin" />Saving…</>
-            ) : (
-              <><Save className="size-4" />Save Route</>
-            )}
+            {saving ? <><Loader2 className="size-4 animate-spin" />Saving…</> : <><Save className="size-4" />Save Route</>}
           </Button>
         </section>
       </div>
 
-      {/* ── RIGHT PANEL: Map ─────────────────────────────────────────────────── */}
+      {/* ── RIGHT PANEL: Map ───────────────────────────────────────────────── */}
       <div className="flex-1 min-h-[400px] lg:min-h-0 sticky top-24 self-start">
         <div className="bg-white rounded-xl border border-gray-200 overflow-hidden h-[600px] lg:h-[calc(100vh-120px)]">
           <RouteMap
             startCoords={startCoords}
             endCoords={endCoords}
             stops={stops}
-            optimizedOrder={optimizedOrder}
+            optimizedOrder={isStale ? null : optimizedOrder}
+            roadGeojson={isStale ? null : roadGeojson}
             className="h-full w-full"
           />
         </div>

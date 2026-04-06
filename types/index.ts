@@ -187,6 +187,8 @@ export type SavedRoute = {
   stops: RouteStop[]
   optimized_order: number[] | null
   total_distance_km: number | null
+  total_distance_miles: number | null
+  road_geometry: { coordinates: [number, number][] } | null
   status: string
   created_at: string
   updated_at: string
