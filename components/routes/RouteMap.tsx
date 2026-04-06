@@ -1,209 +1,185 @@
-"use client";
+'use client'
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
-/**
- * components/routes/RouteMap.tsx
- *
- * Interactive Leaflet map — CSS and JS both loaded dynamically via DOM
- * injection so the map works reliably inside Next.js client components.
- *
- * Usage: always import via dynamic() with ssr:false:
- *   const RouteMap = dynamic(() => import('@/components/routes/RouteMap'), { ssr: false })
- */
-
-import { useEffect, useRef, useState } from "react";
-import type { RouteStop } from "@/types";
+import { useEffect, useRef } from 'react'
+import type { RouteStop } from '@/types'
 
 declare global {
   interface Window { L: any }
 }
 
-type LatLng = { lat: number; lng: number };
-
-type Props = {
-  startCoords?: LatLng | null;
-  endCoords?: LatLng | null;
-  stops: RouteStop[];
-  optimizedOrder?: number[] | null;
-  /** GeoJSON road geometry from ORS Directions API */
-  roadGeojson?: { coordinates: [number, number][] } | null;
+interface RouteMapProps {
+  stops?: RouteStop[]
+  startCoords?: { lat: number; lng: number } | null
+  endCoords?: { lat: number; lng: number } | null
+  roadGeojson?: { coordinates: [number, number][] } | null
   /** Map height in pixels (default 500) */
-  height?: number;
-};
-
-// ── Marker HTML helpers ───────────────────────────────────────────────────────
-
-function pinHtml(color: string, label: string) {
-  return `
-    <div style="
-      width:28px;height:28px;border-radius:50% 50% 50% 0;
-      background:${color};border:2px solid #fff;
-      transform:rotate(-45deg);
-      display:flex;align-items:center;justify-content:center;
-      box-shadow:0 2px 4px rgba(0,0,0,.4);
-    ">
-      <span style="
-        transform:rotate(45deg);
-        color:#fff;font-weight:700;font-size:10px;
-        font-family:sans-serif;line-height:1;
-      ">${label}</span>
-    </div>`;
+  height?: number
 }
 
-// ── Component ─────────────────────────────────────────────────────────────────
-
-export function RouteMap({
+export default function RouteMap({
+  stops = [],
   startCoords,
   endCoords,
-  stops,
-  optimizedOrder,
   roadGeojson,
   height = 500,
-}: Props) {
-  const containerRef  = useRef<HTMLDivElement>(null);
-  const mapRef        = useRef<any>(null);
-  const layersRef     = useRef<any[]>([]);
-  const [mapReady, setMapReady] = useState(false);
+}: RouteMapProps) {
+  const containerRef  = useRef<HTMLDivElement>(null)
+  const mapRef        = useRef<any>(null)
+  const markersRef    = useRef<any[]>([])
+  const polylineRef   = useRef<any>(null)
 
-  // ── Load Leaflet CSS + JS, then initialise map ────────────────────────────
+  // ── Initialise Leaflet once on mount ──────────────────────────────────────
 
   useEffect(() => {
-    // Only run once
-    if (mapRef.current) return;
+    if (typeof window === 'undefined') return
+    if (!containerRef.current) return
+    if (mapRef.current) return
 
-    // 1. CSS
-    if (!document.getElementById("leaflet-css")) {
-      const link  = document.createElement("link");
-      link.id     = "leaflet-css";
-      link.rel    = "stylesheet";
-      link.href   = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.css";
-      document.head.appendChild(link);
+    const initMap = () => {
+      if (!containerRef.current || mapRef.current) return
+      const L = window.L
+
+      // Load CSS if not already present
+      if (!document.getElementById('leaflet-css')) {
+        const link  = document.createElement('link')
+        link.id     = 'leaflet-css'
+        link.rel    = 'stylesheet'
+        link.href   = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.css'
+        document.head.appendChild(link)
+      }
+
+      const map = L.map(containerRef.current, {
+        center:      [43.5, -72.5],
+        zoom:        8,
+        zoomControl: true,
+      })
+
+      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        attribution: '© OpenStreetMap contributors',
+        maxZoom: 19,
+      }).addTo(map)
+
+      mapRef.current = map
+
+      setTimeout(() => {
+        if (mapRef.current) mapRef.current.invalidateSize()
+      }, 200)
     }
 
-    function initMap() {
-      if (!containerRef.current || mapRef.current) return;
-      const map = window.L.map(containerRef.current).setView([43.5, -72.5], 8);
-      window.L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
-        attribution: "© <a href='https://www.openstreetmap.org/copyright'>OpenStreetMap</a>",
-        maxZoom: 18,
-      }).addTo(map);
-      mapRef.current = map;
-      // Force Leaflet to recalculate container size after paint
-      setTimeout(() => map.invalidateSize(), 300);
-      setMapReady(true);
+    // Ensure CSS is injected before JS loads
+    if (!document.getElementById('leaflet-css')) {
+      const link  = document.createElement('link')
+      link.id     = 'leaflet-css'
+      link.rel    = 'stylesheet'
+      link.href   = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.css'
+      document.head.appendChild(link)
     }
 
-    // 2. JS — if already loaded (e.g. hot-reload), init immediately
     if (window.L) {
-      initMap();
+      initMap()
     } else {
-      const existing = document.getElementById("leaflet-js");
-      if (existing) {
-        // Script tag present but may not have fired yet
-        existing.addEventListener("load", initMap, { once: true });
+      const existingScript = document.getElementById('leaflet-js')
+      if (existingScript) {
+        existingScript.addEventListener('load', initMap)
       } else {
-        const script    = document.createElement("script");
-        script.id       = "leaflet-js";
-        script.src      = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.js";
-        script.onload   = initMap;
-        document.head.appendChild(script);
+        const script    = document.createElement('script')
+        script.id       = 'leaflet-js'
+        script.src      = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js'
+        script.onload   = initMap
+        document.head.appendChild(script)
       }
     }
 
     return () => {
       if (mapRef.current) {
-        mapRef.current.remove();
-        mapRef.current = null;
+        mapRef.current.remove()
+        mapRef.current = null
       }
-    };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    }
+  }, []) // empty array — run once on mount only
 
-  // ── Re-draw markers and route whenever data changes ───────────────────────
+  // ── Update markers/route whenever props change ────────────────────────────
 
   useEffect(() => {
-    if (!mapReady || !mapRef.current) return;
-    const L   = window.L;
-    const map = mapRef.current;
+    const map = mapRef.current
+    if (!map || !window.L) return
+    const L = window.L
 
-    // Remove previous layers
-    layersRef.current.forEach((l) => l.remove());
-    layersRef.current = [];
-
-    const bounds: [number, number][] = [];
-
-    function addMarker(coords: LatLng, html: string, popup: string) {
-      const icon = L.divIcon({
-        html,
-        className: "",
-        iconSize:    [28, 28],
-        iconAnchor:  [14, 28],
-        popupAnchor: [0, -28],
-      });
-      const m = L.marker([coords.lat, coords.lng], { icon })
-        .addTo(map)
-        .bindPopup(popup);
-      layersRef.current.push(m);
-      bounds.push([coords.lat, coords.lng]);
+    // Clear existing markers and polyline
+    markersRef.current.forEach((m) => m.remove())
+    markersRef.current = []
+    if (polylineRef.current) {
+      polylineRef.current.remove()
+      polylineRef.current = null
     }
 
-    // Start marker
+    const bounds: [number, number][] = []
+
+    // Start marker (green circle)
     if (startCoords) {
-      addMarker(startCoords, pinHtml("#22c55e", "S"), "<strong>Start</strong>");
+      const m = L.circleMarker(
+        [startCoords.lat, startCoords.lng],
+        { color: '#16a34a', fillColor: '#16a34a', fillOpacity: 1, radius: 10 }
+      ).addTo(map).bindPopup('<strong>Start</strong>')
+      markersRef.current.push(m)
+      bounds.push([startCoords.lat, startCoords.lng])
     }
 
-    // Stop markers (optimized order if available, else original)
-    const orderedIndices = optimizedOrder ?? stops.map((_, i) => i);
-    orderedIndices.forEach((idx, rank) => {
-      const stop = stops[idx];
-      if (!stop?.lat || !stop?.lng) return;
-      addMarker(
-        { lat: stop.lat, lng: stop.lng },
-        pinHtml("#3B82F6", String(rank + 1)),
-        `<strong>${stop.name || `Stop ${rank + 1}`}</strong><br/>${stop.address}`
-      );
-    });
+    // Stop markers (blue numbered div icons)
+    stops.filter((s) => s.lat && s.lng).forEach((stop, i) => {
+      const m = L.marker([stop.lat, stop.lng], {
+        icon: L.divIcon({
+          className: '',
+          html: `<div style="background:#2563eb;color:white;border-radius:50%;width:26px;height:26px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:bold;border:2px solid white;box-shadow:0 2px 4px rgba(0,0,0,0.3)">${i + 1}</div>`,
+          iconSize:   [26, 26],
+          iconAnchor: [13, 13],
+        }),
+      }).addTo(map).bindPopup(`<strong>${stop.name || `Stop ${i + 1}`}</strong><br/>${stop.address}`)
+      markersRef.current.push(m)
+      bounds.push([stop.lat!, stop.lng!])
+    })
 
-    // End marker
+    // End marker (red circle)
     if (endCoords) {
-      addMarker(endCoords, pinHtml("#EF4444", "E"), "<strong>End</strong>");
+      const m = L.circleMarker(
+        [endCoords.lat, endCoords.lng],
+        { color: '#dc2626', fillColor: '#dc2626', fillOpacity: 1, radius: 10 }
+      ).addTo(map).bindPopup('<strong>End / Disposal</strong>')
+      markersRef.current.push(m)
+      bounds.push([endCoords.lat, endCoords.lng])
     }
 
-    // ── Route path ──────────────────────────────────────────────────────────
+    // Route line
     if (roadGeojson?.coordinates?.length) {
-      // Real road path — solid line (ORS returns [lng,lat], Leaflet wants [lat,lng])
-      const latlngs = roadGeojson.coordinates.map(
-        ([lng, lat]) => [lat, lng] as [number, number]
-      );
-      const poly = L.polyline(latlngs, { color: "#2D6A4F", weight: 4, opacity: 0.85 }).addTo(map);
-      layersRef.current.push(poly);
-    } else if (optimizedOrder && startCoords && endCoords) {
-      // Fallback: straight-line dashed polyline
-      const latlngs: [number, number][] = [[startCoords.lat, startCoords.lng]];
-      for (const idx of optimizedOrder) {
-        const s = stops[idx];
-        if (s?.lat && s?.lng) latlngs.push([s.lat, s.lng]);
-      }
-      latlngs.push([endCoords.lat, endCoords.lng]);
-      const poly = L.polyline(latlngs, {
-        color: "#2D6A4F", weight: 3, opacity: 0.7, dashArray: "6 4",
-      }).addTo(map);
-      layersRef.current.push(poly);
+      // Real road path from ORS — GeoJSON format [lng, lat] → L.geoJSON handles it natively
+      polylineRef.current = L.geoJSON(
+        { type: 'Feature', geometry: { type: 'LineString', coordinates: roadGeojson.coordinates } },
+        { style: { color: '#2D6A4F', weight: 4, opacity: 0.8 } }
+      ).addTo(map)
+    } else if (bounds.length > 1) {
+      // Dashed straight-line fallback
+      polylineRef.current = L.polyline(bounds, {
+        color: '#2D6A4F', weight: 3, opacity: 0.6, dashArray: '8, 8',
+      }).addTo(map)
     }
 
-    // Fit to visible points
+    // Fit map to all visible points
     if (bounds.length > 0) {
-      map.fitBounds(bounds, { padding: [40, 40], maxZoom: 14 });
+      map.fitBounds(bounds, { padding: [40, 40] })
     }
-  }, [mapReady, startCoords, endCoords, stops, optimizedOrder, roadGeojson]);
+  }, [stops, startCoords, endCoords, roadGeojson])
 
   return (
     <div
       ref={containerRef}
-      style={{ height: `${height}px`, width: "100%" }}
+      style={{
+        height:          `${height}px`,
+        width:           '100%',
+        minHeight:       '300px',
+        backgroundColor: '#e5e7eb',
+      }}
     />
-  );
+  )
 }
-
-export default RouteMap;

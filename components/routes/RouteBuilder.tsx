@@ -22,7 +22,14 @@ import {
 import { Button } from "@/components/ui/button";
 
 // Leaflet accesses window/document — must be client-only with ssr: false
-const RouteMap = dynamic(() => import("@/components/routes/RouteMap"), { ssr: false });
+const RouteMap = dynamic(() => import("@/components/routes/RouteMap"), {
+  ssr: false,
+  loading: () => (
+    <div style={{ height: "500px" }} className="bg-gray-100 animate-pulse flex items-center justify-center">
+      <p className="text-gray-400 text-sm">Loading map…</p>
+    </div>
+  ),
+});
 import { AddressAutocomplete, type GeocodeState } from "@/components/routes/AddressAutocomplete";
 import { geocodeAddress } from "@/lib/geocoding";
 import { optimizeRoute, kmToMiles, haversineDistance } from "@/lib/route-optimizer";
@@ -816,7 +823,6 @@ export function RouteBuilder({ userId: _userId, existingRoute }: Props) {
             startCoords={startCoords}
             endCoords={endCoords}
             stops={stops}
-            optimizedOrder={isStale ? null : optimizedOrder}
             roadGeojson={isStale ? null : roadGeojson}
             height={500}
           />

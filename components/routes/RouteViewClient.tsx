@@ -15,7 +15,14 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import dynamic from "next/dynamic";
-const RouteMap = dynamic(() => import("@/components/routes/RouteMap"), { ssr: false });
+const RouteMap = dynamic(() => import("@/components/routes/RouteMap"), {
+  ssr: false,
+  loading: () => (
+    <div style={{ height: "400px" }} className="bg-gray-100 animate-pulse flex items-center justify-center">
+      <p className="text-gray-400 text-sm">Loading map…</p>
+    </div>
+  ),
+});
 import { haversineDistance, kmToMiles } from "@/lib/route-optimizer";
 import type { SavedRoute, RouteStop } from "@/types";
 
@@ -224,8 +231,7 @@ export function RouteViewClient({ route }: Props) {
             <RouteMap
               startCoords={startCoords}
               endCoords={endCoords}
-              stops={route.stops}
-              optimizedOrder={route.optimized_order ?? undefined}
+              stops={orderedStops}
               roadGeojson={route.road_geometry ?? null}
               height={400}
             />
