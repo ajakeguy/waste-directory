@@ -578,7 +578,7 @@ export function RouteBuilder({ userId: _userId, existingRoute }: Props) {
                     {/* Status icon */}
                     {ss.status === "loading" && <Loader2 className="size-3.5 text-gray-400 animate-spin shrink-0" />}
                     {ss.status === "ok"      && <span className="size-3.5 rounded-full bg-green-500 shrink-0 flex items-center justify-center"><svg viewBox="0 0 10 10" className="w-2 h-2 fill-white"><path d="M1.5 5l2.5 2.5 4.5-4.5" stroke="white" strokeWidth="1.5" fill="none" strokeLinecap="round"/></svg></span>}
-                    {ss.status === "error"   && <XCircle className="size-3.5 text-red-400 shrink-0" title={ss.error} />}
+                    {ss.status === "error"   && <span title={ss.error}><XCircle className="size-3.5 text-red-400 shrink-0" /></span>}
                     {ss.status === "idle"    && <span className="size-2.5 rounded-full border border-gray-300 shrink-0" />}
                     <button type="button" onClick={() => removeStop(stop.id)}
                       className="text-gray-300 hover:text-red-400 transition-colors shrink-0">
