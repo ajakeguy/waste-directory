@@ -9,11 +9,12 @@ import { NextRequest, NextResponse } from "next/server";
  * the API key out of client bundles.
  */
 export async function POST(req: NextRequest) {
-  const key = process.env.ORS_API_KEY || process.env.NEXT_PUBLIC_ORS_API_KEY;
+  const key = (process.env.ORS_API_KEY || process.env.NEXT_PUBLIC_ORS_API_KEY)?.trim();
   if (!key) {
     console.error("[/api/ors/matrix] ORS API key not configured — set ORS_API_KEY in Vercel env vars");
     return NextResponse.json({ error: "ORS_API_KEY not configured on server" }, { status: 500 });
   }
+  console.log("[/api/ors/matrix] key length:", key.length, "first4:", key.slice(0, 4));
 
   let body: unknown;
   try {
