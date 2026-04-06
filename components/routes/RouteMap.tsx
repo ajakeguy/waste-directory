@@ -61,19 +61,19 @@ export function RouteMap({
   const layersRef    = useRef<any[]>([]);
   const [ready, setReady] = useState(false);
 
-  // Inject Leaflet CSS once
-  useEffect(() => {
-    if (document.getElementById("leaflet-css")) return;
-    const link = document.createElement("link");
-    link.id   = "leaflet-css";
-    link.rel  = "stylesheet";
-    link.href = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.css";
-    document.head.appendChild(link);
-  }, []);
-
   // Initialise map once Leaflet script is loaded
   useEffect(() => {
     if (!ready || !containerRef.current || mapRef.current) return;
+
+    // Ensure Leaflet CSS is loaded before initialising the map
+    if (!document.getElementById("leaflet-css")) {
+      const link = document.createElement("link");
+      link.id   = "leaflet-css";
+      link.rel  = "stylesheet";
+      link.href = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.css";
+      document.head.appendChild(link);
+    }
+
     const L = (window as any).L;
     const map = L.map(containerRef.current, { zoomControl: true }).setView(
       [43.5, -72.5],
@@ -84,6 +84,10 @@ export function RouteMap({
       maxZoom: 18,
     }).addTo(map);
     mapRef.current = map;
+
+    // Force tile re-render once CSS has had time to apply
+    setTimeout(() => map.invalidateSize(), 200);
+
     return () => {
       map.remove();
       mapRef.current = null;

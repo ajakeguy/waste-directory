@@ -12,7 +12,7 @@
  * - Distances shown in miles
  */
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   Plus, Trash2, Upload, Loader2, XCircle,
@@ -22,7 +22,7 @@ import { Button } from "@/components/ui/button";
 import { RouteMap } from "@/components/routes/RouteMap";
 import { AddressAutocomplete, type GeocodeState } from "@/components/routes/AddressAutocomplete";
 import { geocodeAddress } from "@/lib/geocoding";
-import { optimizeRoute, kmToMiles } from "@/lib/route-optimizer";
+import { optimizeRoute, kmToMiles, haversineDistance } from "@/lib/route-optimizer";
 import { fetchRoadRoute } from "@/lib/road-routing";
 import type { RouteStop, SavedRoute } from "@/types";
 
@@ -122,11 +122,38 @@ export function RouteBuilder({ userId: _userId, existingRoute }: Props) {
   );
   const [roadFetching, setRoadFetching]  = useState(false);
   const [isStale,      setIsStale]       = useState(false);
+  const [optimizeMsg,  setOptimizeMsg]   = useState<string | null>(null);
+
+  // ── Estimate current-order state ───────────────────────────────────────────
+  const [currentRouteMiles,  setCurrentRouteMiles]  = useState<number | null>(null);
+  const [estimateRunning,    setEstimateRunning]     = useState(false);
 
   // ── Save state ─────────────────────────────────────────────────────────────
   const [saving,  setSaving]  = useState(false);
   const [savedId, setSavedId] = useState<string | null>(existingRoute?.id ?? null);
   const [error,   setError]   = useState<string | null>(null);
+
+  // ── Fix 1: auto-geocode start/end when editing an existing route ──────────
+  // The saved route only stores address strings, not coords. Re-geocode on mount.
+
+  useEffect(() => {
+    if (!isEdit) return;
+    if (existingRoute?.start_address) {
+      setStartState({ status: "loading" });
+      geocodeAddress(existingRoute.start_address).then((r) => {
+        if (r.ok) { setStartCoords({ lat: r.lat, lng: r.lng }); setStartState({ status: "ok" }); }
+        else { setStartState({ status: "error", error: r.error }); }
+      });
+    }
+    if (existingRoute?.end_address) {
+      setEndState({ status: "loading" });
+      geocodeAddress(existingRoute.end_address).then((r) => {
+        if (r.ok) { setEndCoords({ lat: r.lat, lng: r.lng }); setEndState({ status: "ok" }); }
+        else { setEndState({ status: "error", error: r.error }); }
+      });
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // ── Helpers: mark route stale when stops change ────────────────────────────
 
@@ -137,6 +164,8 @@ export function RouteBuilder({ userId: _userId, existingRoute }: Props) {
     }
     setOptimizedOrder(null);
     setTotalDistanceMiles(null);
+    setCurrentRouteMiles(null);
+    setOptimizeMsg(null);
   }
 
   // ── Start address resolved (from autocomplete or manual geocode) ───────────
@@ -328,18 +357,26 @@ export function RouteBuilder({ userId: _userId, existingRoute }: Props) {
     setError(null);
     setRoadGeojson(null);
     setTotalDistanceMiles(null);
+    setOptimizeMsg(null);
+    setCurrentRouteMiles(null);
 
     // 1. TSP optimization (runs sync in setTimeout so UI updates first)
-    let fullIndices: number[] = [];
+    let orderedGeocodedStops: RouteStop[] = [];
     await new Promise<void>((resolve) => {
       setTimeout(() => {
         const coords = geocodedStops.map((s) => ({ lat: s.lat!, lng: s.lng! }));
         const { orderedIndices } = optimizeRoute(coords, startCoords, endCoords);
-        fullIndices = orderedIndices.map((i) => {
-          const gs = geocodedStops[i];
-          return stops.findIndex((s) => s.id === gs.id);
-        });
-        setOptimizedOrder(fullIndices);
+        // Map TSP indices back to actual stop objects
+        orderedGeocodedStops = orderedIndices.map((i) => geocodedStops[i]);
+
+        // Physically reorder stops: optimized geocoded ones first, ungeocoded appended
+        const ungeocodedStops = stops.filter((s) => !s.geocoded || !s.lat || !s.lng);
+        const reorderedStops  = [...orderedGeocodedStops, ...ungeocodedStops];
+        setStops(reorderedStops);
+
+        // optimizedOrder is now sequential for the geocoded portion
+        const sequential = orderedGeocodedStops.map((_, i) => i);
+        setOptimizedOrder(sequential);
         resolve();
       }, 50);
     });
@@ -347,23 +384,50 @@ export function RouteBuilder({ userId: _userId, existingRoute }: Props) {
 
     // 2. Fetch real road route from ORS
     setRoadFetching(true);
-    const orderedCoords = fullIndices
-      .map((i) => stops[i])
+    const orderedCoords = orderedGeocodedStops
       .filter((s) => s?.lat && s?.lng)
       .map((s) => ({ lat: s.lat!, lng: s.lng! }));
 
     const road = await fetchRoadRoute(startCoords, orderedCoords, endCoords);
+    let finalMiles: number;
     if (road) {
       setRoadGeojson({ coordinates: road.coordinates });
+      finalMiles = road.distanceMiles;
       setTotalDistanceMiles(road.distanceMiles);
     } else {
       // Fall back to haversine estimate converted to miles
-      const geocodedCoords = geocodedStops.map((s) => ({ lat: s.lat!, lng: s.lng! }));
-      const { orderedIndices, totalDistanceKm } = optimizeRoute(geocodedCoords, startCoords, endCoords);
-      void orderedIndices; // already set above
-      setTotalDistanceMiles(kmToMiles(totalDistanceKm));
+      const { totalDistanceKm } = optimizeRoute(orderedCoords, startCoords, endCoords);
+      finalMiles = kmToMiles(totalDistanceKm);
+      setTotalDistanceMiles(finalMiles);
     }
     setRoadFetching(false);
+    setOptimizeMsg(`Route optimized! Stops reordered to minimize distance. (${finalMiles.toFixed(1)} mi)`);
+  }
+
+  // ── Estimate distance in current (user-entered) order ─────────────────────
+
+  async function estimateCurrentOrder() {
+    if (!startCoords || !endCoords) return;
+    const geocodedInOrder = stops.filter((s) => s.geocoded && s.lat && s.lng);
+    if (!geocodedInOrder.length) return;
+
+    setEstimateRunning(true);
+    setCurrentRouteMiles(null);
+
+    const coordsInOrder = geocodedInOrder.map((s) => ({ lat: s.lat!, lng: s.lng! }));
+    const road = await fetchRoadRoute(startCoords, coordsInOrder, endCoords);
+    if (road) {
+      setCurrentRouteMiles(road.distanceMiles);
+    } else {
+      // Haversine fallback: sum segment distances in current order
+      let total = haversineDistance(startCoords.lat, startCoords.lng, coordsInOrder[0].lat, coordsInOrder[0].lng);
+      for (let i = 0; i < coordsInOrder.length - 1; i++) {
+        total += haversineDistance(coordsInOrder[i].lat, coordsInOrder[i].lng, coordsInOrder[i + 1].lat, coordsInOrder[i + 1].lng);
+      }
+      total += haversineDistance(coordsInOrder[coordsInOrder.length - 1].lat, coordsInOrder[coordsInOrder.length - 1].lng, endCoords.lat, endCoords.lng);
+      setCurrentRouteMiles(kmToMiles(total));
+    }
+    setEstimateRunning(false);
   }
 
   // ── Save route ─────────────────────────────────────────────────────────────
@@ -409,7 +473,8 @@ export function RouteBuilder({ userId: _userId, existingRoute }: Props) {
                          startState.status === "loading" || endState.status === "loading";
 
   // Enable optimize whenever start+end are geocoded AND at least 1 geocoded stop
-  const canOptimize = !!startCoords && !!endCoords && geocodedCount > 0 && !anyLoading && !optimizing && !roadFetching;
+  const canOptimize  = !!startCoords && !!endCoords && geocodedCount > 0 && !anyLoading && !optimizing && !roadFetching;
+  const canEstimate  = !!startCoords && !!endCoords && geocodedCount > 0 && !anyLoading && !estimateRunning && !optimizing && !roadFetching;
 
   // ── Render ─────────────────────────────────────────────────────────────────
 
@@ -633,6 +698,28 @@ export function RouteBuilder({ userId: _userId, existingRoute }: Props) {
             )}
           </Button>
 
+          {/* Estimate current order */}
+          <Button
+            type="button" variant="outline"
+            className="w-full justify-start gap-2"
+            onClick={estimateCurrentOrder}
+            disabled={!canEstimate}
+          >
+            {estimateRunning ? (
+              <><Loader2 className="size-4 animate-spin" />Estimating…</>
+            ) : (
+              <><MapPin className="size-4" />Estimate Current Route</>
+            )}
+          </Button>
+
+          {/* Current order estimate result (when no optimized result yet) */}
+          {currentRouteMiles !== null && totalDistanceMiles === null && (
+            <div className="rounded-lg bg-gray-50 border border-gray-200 px-4 py-3 text-center">
+              <p className="text-xs text-gray-500 uppercase tracking-wide mb-0.5">Current route (entered order)</p>
+              <p className="text-xl font-bold text-gray-700">~{currentRouteMiles.toFixed(1)} mi</p>
+            </div>
+          )}
+
           {/* Optimize */}
           <Button
             type="button"
@@ -661,8 +748,42 @@ export function RouteBuilder({ userId: _userId, existingRoute }: Props) {
             )}
           </Button>
 
-          {/* Distance result */}
-          {totalDistanceMiles !== null && (
+          {/* Optimize success message */}
+          {optimizeMsg && (
+            <div className="rounded-lg bg-green-50 border border-green-200 px-4 py-2.5 text-xs text-green-700 flex items-center gap-2">
+              <span className="size-4 rounded-full bg-green-500 flex items-center justify-center shrink-0">
+                <svg viewBox="0 0 10 10" className="w-2.5 h-2.5 fill-white"><path d="M1.5 5l2.5 2.5 4.5-4.5" stroke="white" strokeWidth="1.5" fill="none" strokeLinecap="round"/></svg>
+              </span>
+              Route optimized! Stops reordered to minimize distance.
+            </div>
+          )}
+
+          {/* Distance result(s) */}
+          {totalDistanceMiles !== null && currentRouteMiles !== null ? (
+            // Both optimized and original — show comparison
+            <div className="rounded-lg bg-[#2D6A4F]/5 border border-[#2D6A4F]/20 px-4 py-3 space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-xs text-gray-500">Optimized route</span>
+                <span className="text-base font-bold text-[#2D6A4F]">{totalDistanceMiles.toFixed(1)} mi</span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-xs text-gray-500">Your original order</span>
+                <span className="text-base font-medium text-gray-600">{currentRouteMiles.toFixed(1)} mi</span>
+              </div>
+              {currentRouteMiles > totalDistanceMiles && (
+                <div className="pt-1 border-t border-[#2D6A4F]/10 flex items-center justify-between">
+                  <span className="text-xs font-medium text-[#2D6A4F]">You saved</span>
+                  <span className="text-sm font-bold text-[#2D6A4F]">
+                    {(currentRouteMiles - totalDistanceMiles).toFixed(1)} mi
+                    <span className="text-xs font-normal ml-1 text-[#2D6A4F]/70">
+                      ({Math.round((1 - totalDistanceMiles / currentRouteMiles) * 100)}%)
+                    </span>
+                  </span>
+                </div>
+              )}
+            </div>
+          ) : totalDistanceMiles !== null ? (
+            // Optimized only
             <div className="rounded-lg bg-[#2D6A4F]/5 border border-[#2D6A4F]/20 px-4 py-3 text-center">
               <p className="text-xs text-gray-500 uppercase tracking-wide mb-0.5">
                 {roadGeojson ? "Road distance" : "Est. distance (straight line)"}
@@ -671,7 +792,7 @@ export function RouteBuilder({ userId: _userId, existingRoute }: Props) {
                 {totalDistanceMiles.toFixed(1)} mi
               </p>
             </div>
-          )}
+          ) : null}
 
           {/* Save */}
           <Button
