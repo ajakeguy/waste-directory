@@ -1,14 +1,8 @@
 import { notFound, redirect } from "next/navigation";
 import type { Metadata } from "next";
-import dynamic from "next/dynamic";
 import { createClient } from "@/lib/supabase/server";
 import type { SavedRoute, RouteStop } from "@/types";
-
-// RoutePrintClient handles map init, html2canvas capture, and window.print()
-const RoutePrintClient = dynamic(
-  () => import("@/components/routes/RoutePrintClient").then((m) => ({ default: m.RoutePrintClient })),
-  { ssr: false }
-);
+import { RoutePrintClient } from "@/components/routes/RoutePrintClient";
 
 type Props = { params: Promise<{ id: string }> };
 
