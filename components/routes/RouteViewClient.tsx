@@ -14,7 +14,8 @@ import {
   Copy, Check, Download, Printer, Pencil, Trash2, MapPin,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { RouteMap } from "@/components/routes/RouteMap";
+import dynamic from "next/dynamic";
+const RouteMap = dynamic(() => import("@/components/routes/RouteMap"), { ssr: false });
 import { haversineDistance, kmToMiles } from "@/lib/route-optimizer";
 import type { SavedRoute, RouteStop } from "@/types";
 
@@ -219,14 +220,14 @@ export function RouteViewClient({ route }: Props) {
           </div>
 
           {/* Map */}
-          <div className="rounded-xl border border-gray-200 overflow-hidden h-96">
+          <div className="rounded-xl border border-gray-200 overflow-hidden">
             <RouteMap
               startCoords={startCoords}
               endCoords={endCoords}
               stops={route.stops}
               optimizedOrder={route.optimized_order ?? undefined}
               roadGeojson={route.road_geometry ?? null}
-              className="h-full w-full"
+              height={400}
             />
           </div>
         </div>

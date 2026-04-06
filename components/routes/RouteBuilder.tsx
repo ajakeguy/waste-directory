@@ -14,12 +14,15 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import dynamic from "next/dynamic";
 import {
   Plus, Trash2, Upload, Loader2, XCircle,
   GripVertical, Download, MapPin, Save, AlertTriangle,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { RouteMap } from "@/components/routes/RouteMap";
+
+// Leaflet accesses window/document — must be client-only with ssr: false
+const RouteMap = dynamic(() => import("@/components/routes/RouteMap"), { ssr: false });
 import { AddressAutocomplete, type GeocodeState } from "@/components/routes/AddressAutocomplete";
 import { geocodeAddress } from "@/lib/geocoding";
 import { optimizeRoute, kmToMiles, haversineDistance } from "@/lib/route-optimizer";
@@ -807,15 +810,15 @@ export function RouteBuilder({ userId: _userId, existingRoute }: Props) {
       </div>
 
       {/* ── RIGHT PANEL: Map ───────────────────────────────────────────────── */}
-      <div className="flex-1 min-h-[400px] lg:min-h-0 sticky top-24 self-start">
-        <div className="bg-white rounded-xl border border-gray-200 overflow-hidden h-[600px] lg:h-[calc(100vh-120px)]">
+      <div className="flex-1 sticky top-24 self-start">
+        <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
           <RouteMap
             startCoords={startCoords}
             endCoords={endCoords}
             stops={stops}
             optimizedOrder={isStale ? null : optimizedOrder}
             roadGeojson={isStale ? null : roadGeojson}
-            className="h-full w-full"
+            height={500}
           />
         </div>
       </div>
