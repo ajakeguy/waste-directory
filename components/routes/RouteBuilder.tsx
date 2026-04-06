@@ -577,6 +577,7 @@ export function RouteBuilder({ userId: _userId, existingRoute }: Props) {
             placeholder="123 Depot Road, Burlington, VT"
             geocodeState={startState.status}
             geocodeError={startState.error}
+            locationType="depot"
             onChange={(v) => { setStartAddress(v); setStartCoords(null); setStartState({ status: "idle" }); }}
             onResolved={resolveStart}
             onCleared={() => { setStartCoords(null); setStartState({ status: "idle" }); markStale(); }}
@@ -747,6 +748,7 @@ export function RouteBuilder({ userId: _userId, existingRoute }: Props) {
             placeholder="789 Transfer Station Rd, Montpelier, VT"
             geocodeState={endState.status}
             geocodeError={endState.error}
+            locationType="disposal"
             onChange={(v) => { setEndAddress(v); setEndCoords(null); setEndState({ status: "idle" }); }}
             onResolved={resolveEnd}
             onCleared={() => { setEndCoords(null); setEndState({ status: "idle" }); markStale(); }}
