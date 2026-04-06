@@ -83,6 +83,88 @@ async function tryFetchChunk(
 }
 
 /**
+ * Fetch road distance only (no geometry) using the ORS Matrix API.
+ * For routes with ≤ 56 intermediate stops (≤ 58 total points), the Matrix API
+ * handles it in a single fast call (~2–5s vs 30s+ for Directions).
+ * Larger routes fall back to the chunked Directions API.
+ *
+ * Returns total road distance in miles, or null on failure.
+ */
+export async function fetchRoadDistanceMatrix(
+  start: LatLng,
+  orderedStops: LatLng[],
+  end: LatLng
+): Promise<number | null> {
+  const allPoints: LatLng[] = [start, ...orderedStops, end];
+  const n = allPoints.length;
+
+  // Matrix free-tier limit: 3,500 (origins × destinations). 58×58 = 3,364 ≤ limit.
+  // For larger routes fall back to chunked Directions (geometry not needed here).
+  if (n > 58) {
+    const result = await fetchRoadRoute(start, orderedStops, end);
+    return result?.distanceMiles ?? null;
+  }
+
+  const key = process.env.NEXT_PUBLIC_ORS_API_KEY;
+  if (!key) {
+    console.warn("[matrix] NEXT_PUBLIC_ORS_API_KEY not set");
+    return null;
+  }
+
+  const locations = allPoints.map((p) => [p.lng, p.lat]);
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 15_000);
+
+  try {
+    const res = await fetch(
+      "https://api.openrouteservice.org/v2/matrix/driving-car",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "api-key": key,
+        },
+        body: JSON.stringify({ locations, metrics: ["distance"], units: "mi" }),
+        signal: controller.signal,
+      }
+    );
+    clearTimeout(timeout);
+
+    if (!res.ok) {
+      const body = await res.text().catch(() => "");
+      console.warn(`[matrix] HTTP ${res.status}: ${body.slice(0, 200)}`);
+      return null;
+    }
+
+    const json = await res.json() as { distances?: number[][] };
+    const distances = json.distances;
+    if (!distances || distances.length < 2) {
+      console.warn("[matrix] unexpected response shape");
+      return null;
+    }
+
+    // Sum the super-diagonal: distances[0][1] + distances[1][2] + … + distances[N-2][N-1]
+    let totalMiles = 0;
+    for (let i = 0; i < distances.length - 1; i++) {
+      totalMiles += distances[i][i + 1];
+    }
+
+    console.log(`[matrix] success: ${totalMiles.toFixed(2)} mi (${n} points)`);
+    return totalMiles;
+
+  } catch (err) {
+    clearTimeout(timeout);
+    if (err instanceof Error && err.name === "AbortError") {
+      console.warn("[matrix] timed out after 15s");
+    } else {
+      console.warn("[matrix] fetch error:", err);
+    }
+    return null;
+  }
+}
+
+/**
  * Fetch the road geometry from start → ordered stops → end.
  * If more than 48 intermediate stops, splits into chunks of 48 and stitches.
  */

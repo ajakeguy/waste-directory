@@ -33,7 +33,7 @@ const RouteMap = dynamic(() => import("@/components/routes/RouteMap"), {
 import { AddressAutocomplete, type GeocodeState } from "@/components/routes/AddressAutocomplete";
 import { geocodeAddress } from "@/lib/geocoding";
 import { optimizeRoute, kmToMiles, haversineDistance } from "@/lib/route-optimizer";
-import { fetchRoadRoute } from "@/lib/road-routing";
+import { fetchRoadRoute, fetchRoadDistanceMatrix } from "@/lib/road-routing";
 import { RouteCostCalculator } from "@/components/routes/RouteCostCalculator";
 import type { RouteStop, SavedRoute } from "@/types";
 
@@ -399,24 +399,33 @@ export function RouteBuilder({ userId: _userId, existingRoute }: Props) {
     });
     setOptimizing(false);
 
-    // 2. Fetch real road route from ORS
+    // 2. Fetch road distance (Matrix API — fast) + geometry (Directions API — for map)
     setRoadFetching(true);
     const orderedCoords = orderedGeocodedStops
       .filter((s) => s?.lat && s?.lng)
       .map((s) => ({ lat: s.lat!, lng: s.lng! }));
 
-    const road = await fetchRoadRoute(startCoords, orderedCoords, endCoords);
+    // Matrix API for distance (fast single call), Directions for geometry in parallel
+    const [matrixMiles, road] = await Promise.all([
+      fetchRoadDistanceMatrix(startCoords, orderedCoords, endCoords),
+      fetchRoadRoute(startCoords, orderedCoords, endCoords),
+    ]);
+
     let finalMiles: number;
     if (road) {
       setRoadGeojson({ coordinates: road.coordinates });
-      finalMiles = road.distanceMiles;
-      setTotalDistanceMiles(road.distanceMiles);
+      // Prefer matrix distance (more accurate sequential sum), fall back to directions distance
+      finalMiles = matrixMiles ?? road.distanceMiles;
     } else {
-      // Fall back to haversine estimate converted to miles
-      const { totalDistanceKm } = optimizeRoute(orderedCoords, startCoords, endCoords);
-      finalMiles = kmToMiles(totalDistanceKm);
-      setTotalDistanceMiles(finalMiles);
+      // Directions failed — use matrix if available, else haversine
+      if (matrixMiles !== null) {
+        finalMiles = matrixMiles;
+      } else {
+        const { totalDistanceKm } = optimizeRoute(orderedCoords, startCoords, endCoords);
+        finalMiles = kmToMiles(totalDistanceKm);
+      }
     }
+    setTotalDistanceMiles(finalMiles);
     setRoadFetching(false);
     setOptimizeMsg(`Route optimized! Stops reordered to minimize distance. (${finalMiles.toFixed(1)} mi)`);
   }
@@ -435,13 +444,20 @@ export function RouteBuilder({ userId: _userId, existingRoute }: Props) {
     setEstimateOrsFailure(false);
 
     const coordsInOrder = geocodedInOrder.map((s) => ({ lat: s.lat!, lng: s.lng! }));
-    const road = await fetchRoadRoute(startCoords, coordsInOrder, endCoords);
-    if (road) {
-      setCurrentRouteMiles(road.distanceMiles);
+
+    // Matrix API for distance (fast), Directions for map geometry — run in parallel
+    const [matrixMiles, road] = await Promise.all([
+      fetchRoadDistanceMatrix(startCoords, coordsInOrder, endCoords),
+      fetchRoadRoute(startCoords, coordsInOrder, endCoords),
+    ]);
+
+    if (matrixMiles !== null || road) {
+      const miles = matrixMiles ?? road!.distanceMiles;
+      setCurrentRouteMiles(miles);
       setEstimateIsRoad(true);
-      setEstimateGeojson({ coordinates: road.coordinates });
+      if (road) setEstimateGeojson({ coordinates: road.coordinates });
     } else {
-      // ORS failed — compute haversine fallback and flag the failure
+      // Both ORS APIs failed — haversine fallback
       let total = haversineDistance(startCoords.lat, startCoords.lng, coordsInOrder[0].lat, coordsInOrder[0].lng);
       for (let i = 0; i < coordsInOrder.length - 1; i++) {
         total += haversineDistance(coordsInOrder[i].lat, coordsInOrder[i].lng, coordsInOrder[i + 1].lat, coordsInOrder[i + 1].lng);
