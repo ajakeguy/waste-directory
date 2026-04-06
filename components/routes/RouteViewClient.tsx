@@ -24,6 +24,7 @@ const RouteMap = dynamic(() => import("@/components/routes/RouteMap"), {
   ),
 });
 import { haversineDistance, kmToMiles } from "@/lib/route-optimizer";
+import { RouteCostCalculator, DEFAULTS, type CostAssumptions } from "@/components/routes/RouteCostCalculator";
 import type { SavedRoute, RouteStop } from "@/types";
 
 type LatLng = { lat: number; lng: number };
@@ -52,6 +53,7 @@ export function RouteViewClient({ route }: Props) {
   const [copiedId,  setCopiedId]  = useState<string | null>(null);
   const [deleting,  setDeleting]  = useState(false);
   const [showConfirm, setShowConfirm] = useState(false);
+  const [assumptions, setAssumptions] = useState<CostAssumptions>(DEFAULTS);
 
   const orderedStops: RouteStop[] =
     route.optimized_order
@@ -71,7 +73,7 @@ export function RouteViewClient({ route }: Props) {
   // ── Export CSV ────────────────────────────────────────────────────────────────
 
   function exportCsv() {
-    const rows = [
+    const rows: string[][] = [
       ["Stop #", "Name", "Address", "Distance from Previous (mi)"],
       ["0", "Start", route.start_address, "-"],
     ];
@@ -93,19 +95,52 @@ export function RouteViewClient({ route }: Props) {
     if (lastStop?.lat && lastStop?.lng) {
       const fakeEnd: RouteStop = {
         id: "end", address: route.end_address,
-        geocoded: false, // coords not stored separately
+        geocoded: false,
       };
       const d = distanceBetween(lastStop, fakeEnd);
       if (d !== null) lastDist = d.toFixed(2);
     }
     rows.push([String(orderedStops.length + 1), "End", route.end_address, lastDist]);
 
-    const csv = rows.map((r) => r.map((c) => `"${c.replace(/"/g, '""')}"`).join(",")).join("\n");
-    const blob = new Blob([csv], { type: "text/csv" });
-    const a = document.createElement("a");
-    a.href = URL.createObjectURL(blob);
-    a.download = `${route.route_name.replace(/\s+/g, "-")}.csv`;
-    a.click();
+    // ── Cost analysis section ──────────────────────────────────────────────────
+    const totalMi = route.total_distance_miles ?? (route.total_distance_km ? kmToMiles(route.total_distance_km) : null);
+    if (totalMi !== null && orderedStops.length > 0) {
+      const AVG_SPEED_MPH = 25;
+      const a = assumptions;
+      const driveMin   = (totalMi / AVG_SPEED_MPH) * 60;
+      const serviceMin = orderedStops.length * a.serviceMinPerStop;
+      const totalMin   = driveMin + serviceMin;
+      const totalHrs   = totalMin / 60;
+      const gallons    = totalMi / a.mpg;
+      const fuelCost   = gallons * a.fuelPricePerGallon;
+      const laborCost  = totalHrs * a.laborRatePerHour;
+      const totalCost  = fuelCost + laborCost;
+      rows.push(
+        [],
+        ["--- Cost Analysis ---"],
+        ["Assumption", "Value"],
+        ["Service time per stop (min)", String(a.serviceMinPerStop)],
+        ["Fuel efficiency (mpg)", String(a.mpg)],
+        ["Fuel price ($/gal)", String(a.fuelPricePerGallon)],
+        ["Labour rate ($/hr)", String(a.laborRatePerHour)],
+        [],
+        ["Metric", "Value"],
+        ["Total distance (mi)", totalMi.toFixed(1)],
+        ["Drive time (min)", driveMin.toFixed(0)],
+        ["Service time (min)", serviceMin.toFixed(0)],
+        ["Total time (hrs)", totalHrs.toFixed(1)],
+        ["Fuel cost ($)", fuelCost.toFixed(2)],
+        ["Labour cost ($)", laborCost.toFixed(2)],
+        ["Total estimated cost ($)", totalCost.toFixed(2)],
+        ["Cost per stop ($)", (totalCost / orderedStops.length).toFixed(2)],
+      );
+    }
+
+    const csv = rows.map((r) => r.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(",")).join("\n");
+    const el = document.createElement("a");
+    el.href = URL.createObjectURL(new Blob([csv], { type: "text/csv" }));
+    el.download = `${route.route_name.replace(/\s+/g, "-")}.csv`;
+    el.click();
   }
 
   // ── Delete route ──────────────────────────────────────────────────────────────
@@ -236,6 +271,20 @@ export function RouteViewClient({ route }: Props) {
               height={400}
             />
           </div>
+
+          {/* Cost calculator */}
+          {(() => {
+            const totalMi = route.total_distance_miles ?? (route.total_distance_km ? kmToMiles(route.total_distance_km) : null);
+            if (totalMi === null || orderedStops.length === 0) return null;
+            return (
+              <RouteCostCalculator
+                totalMiles={totalMi}
+                stopCount={orderedStops.length}
+                isEstimated={!route.total_distance_miles}
+                onAssumptionsChange={setAssumptions}
+              />
+            );
+          })()}
         </div>
 
         {/* ── Sidebar ───────────────────────────────────────────────────────── */}

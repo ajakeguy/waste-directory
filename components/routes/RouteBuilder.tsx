@@ -34,6 +34,7 @@ import { AddressAutocomplete, type GeocodeState } from "@/components/routes/Addr
 import { geocodeAddress } from "@/lib/geocoding";
 import { optimizeRoute, kmToMiles, haversineDistance } from "@/lib/route-optimizer";
 import { fetchRoadRoute } from "@/lib/road-routing";
+import { RouteCostCalculator } from "@/components/routes/RouteCostCalculator";
 import type { RouteStop, SavedRoute } from "@/types";
 
 type LatLng = { lat: number; lng: number };
@@ -849,8 +850,8 @@ export function RouteBuilder({ userId: _userId, existingRoute }: Props) {
         </section>
       </div>
 
-      {/* ── RIGHT PANEL: Map ───────────────────────────────────────────────── */}
-      <div className="flex-1 sticky top-24 self-start">
+      {/* ── RIGHT PANEL: Map + Cost Calculator ───────────────────────────── */}
+      <div className="flex-1 sticky top-24 self-start space-y-5">
         <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
           <RouteMap
             startCoords={startCoords}
@@ -860,6 +861,20 @@ export function RouteBuilder({ userId: _userId, existingRoute }: Props) {
             height={500}
           />
         </div>
+
+        {/* Cost calculator — shown whenever we have a distance + at least one stop */}
+        {(() => {
+          const costMiles = totalDistanceMiles ?? currentRouteMiles ?? null;
+          if (costMiles === null || stops.length === 0) return null;
+          const costIsEstimated = totalDistanceMiles === null || (!roadGeojson && !estimateIsRoad);
+          return (
+            <RouteCostCalculator
+              totalMiles={costMiles}
+              stopCount={stops.filter((s) => s.geocoded).length || stops.length}
+              isEstimated={costIsEstimated}
+            />
+          );
+        })()}
       </div>
     </div>
   );

@@ -100,8 +100,8 @@ export async function fetchRoadRoute(
   // Build full waypoint list: start, ...stops, end
   const allWaypoints: LatLng[] = [start, ...orderedStops, end];
 
-  // ORS allows max 50 waypoints per request — chunk at 50 with 1-pt overlap
-  const CHUNK_SIZE = 50;
+  // ORS allows max 50 waypoints per request — use 15 for reliability on free tier
+  const CHUNK_SIZE = 15;
   const chunks: LatLng[][] = [];
 
   if (allWaypoints.length <= CHUNK_SIZE) {
@@ -125,6 +125,7 @@ export async function fetchRoadRoute(
     let succeededProfile: string | null = null;
 
     for (const profile of PROFILES) {
+      console.log(`[road-routing] chunk ${ci + 1}/${chunks.length} - ${profile}`);
       chunkResult = await tryFetchChunk(coordinates, key, profile);
       if (chunkResult) {
         succeededProfile = profile;

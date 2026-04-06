@@ -12,7 +12,8 @@
 
 import { useEffect, useRef } from "react";
 import { PrintToolbar } from "@/components/reports/PrintToolbar";
-import { haversineDistance } from "@/lib/route-optimizer";
+import { haversineDistance, kmToMiles } from "@/lib/route-optimizer";
+import { RouteCostCalculator } from "@/components/routes/RouteCostCalculator";
 import type { SavedRoute, RouteStop } from "@/types";
 
 declare global {
@@ -145,7 +146,7 @@ export function RoutePrintClient({ route }: Props) {
   }, []);
 
   const totalMi = route.total_distance_miles
-    ?? (route.total_distance_km ? route.total_distance_km * 0.621371 : null);
+    ?? (route.total_distance_km ? kmToMiles(route.total_distance_km) : null);
 
   return (
     <>
@@ -252,6 +253,18 @@ export function RoutePrintClient({ route }: Props) {
               <span className="text-gray-400 text-xs ml-1">(est.)</span>
             )}
           </p>
+        )}
+
+        {/* Cost calculator in print mode */}
+        {totalMi && orderedStops.length > 0 && (
+          <div className="mt-5">
+            <RouteCostCalculator
+              totalMiles={totalMi}
+              stopCount={orderedStops.length}
+              isEstimated={!route.total_distance_miles}
+              printMode={true}
+            />
+          </div>
         )}
 
         <p className="text-xs text-gray-400 text-center mt-8 print:mt-4">
