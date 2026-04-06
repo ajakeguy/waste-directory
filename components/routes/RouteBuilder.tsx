@@ -137,6 +137,8 @@ export function RouteBuilder({ userId: _userId, existingRoute }: Props) {
   // ── Estimate current-order state ───────────────────────────────────────────
   const [currentRouteMiles,  setCurrentRouteMiles]  = useState<number | null>(null);
   const [estimateRunning,    setEstimateRunning]     = useState(false);
+  const [estimateIsRoad,     setEstimateIsRoad]      = useState(false);
+  const [estimateGeojson,    setEstimateGeojson]     = useState<{ coordinates: [number, number][] } | null>(null);
 
   // ── Save state ─────────────────────────────────────────────────────────────
   const [saving,  setSaving]  = useState(false);
@@ -176,6 +178,8 @@ export function RouteBuilder({ userId: _userId, existingRoute }: Props) {
     setTotalDistanceMiles(null);
     setCurrentRouteMiles(null);
     setOptimizeMsg(null);
+    setEstimateIsRoad(false);
+    setEstimateGeojson(null);
   }
 
   // ── Start address resolved (from autocomplete or manual geocode) ───────────
@@ -423,11 +427,15 @@ export function RouteBuilder({ userId: _userId, existingRoute }: Props) {
 
     setEstimateRunning(true);
     setCurrentRouteMiles(null);
+    setEstimateIsRoad(false);
+    setEstimateGeojson(null);
 
     const coordsInOrder = geocodedInOrder.map((s) => ({ lat: s.lat!, lng: s.lng! }));
     const road = await fetchRoadRoute(startCoords, coordsInOrder, endCoords);
     if (road) {
       setCurrentRouteMiles(road.distanceMiles);
+      setEstimateIsRoad(true);
+      setEstimateGeojson({ coordinates: road.coordinates });
     } else {
       // Haversine fallback: sum segment distances in current order
       let total = haversineDistance(startCoords.lat, startCoords.lng, coordsInOrder[0].lat, coordsInOrder[0].lng);
@@ -436,6 +444,7 @@ export function RouteBuilder({ userId: _userId, existingRoute }: Props) {
       }
       total += haversineDistance(coordsInOrder[coordsInOrder.length - 1].lat, coordsInOrder[coordsInOrder.length - 1].lng, endCoords.lat, endCoords.lng);
       setCurrentRouteMiles(kmToMiles(total));
+      setEstimateIsRoad(false);
     }
     setEstimateRunning(false);
   }
@@ -726,7 +735,10 @@ export function RouteBuilder({ userId: _userId, existingRoute }: Props) {
           {currentRouteMiles !== null && totalDistanceMiles === null && (
             <div className="rounded-lg bg-gray-50 border border-gray-200 px-4 py-3 text-center">
               <p className="text-xs text-gray-500 uppercase tracking-wide mb-0.5">Current route (entered order)</p>
-              <p className="text-xl font-bold text-gray-700">~{currentRouteMiles.toFixed(1)} mi</p>
+              <p className="text-xl font-bold text-gray-700">{currentRouteMiles.toFixed(1)} mi</p>
+              <p className="text-xs text-gray-400 mt-0.5">
+                {estimateIsRoad ? "road distance" : "est. straight-line"}
+              </p>
             </div>
           )}
 
@@ -777,7 +789,9 @@ export function RouteBuilder({ userId: _userId, existingRoute }: Props) {
                 <span className="text-base font-bold text-[#2D6A4F]">{totalDistanceMiles.toFixed(1)} mi</span>
               </div>
               <div className="flex items-center justify-between">
-                <span className="text-xs text-gray-500">Your original order</span>
+                <span className="text-xs text-gray-500">
+                  Original order{estimateIsRoad ? "" : " (est.)"}
+                </span>
                 <span className="text-base font-medium text-gray-600">{currentRouteMiles.toFixed(1)} mi</span>
               </div>
               {currentRouteMiles > totalDistanceMiles && (
@@ -823,7 +837,7 @@ export function RouteBuilder({ userId: _userId, existingRoute }: Props) {
             startCoords={startCoords}
             endCoords={endCoords}
             stops={stops}
-            roadGeojson={isStale ? null : roadGeojson}
+            roadGeojson={isStale ? null : (roadGeojson ?? estimateGeojson ?? null)}
             height={500}
           />
         </div>
