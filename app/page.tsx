@@ -17,6 +17,12 @@ const states = [
     description: "Serving the Bay State",
   },
   {
+    name: "New Hampshire",
+    slug: "new-hampshire",
+    abbr: "NH",
+    description: "Serving the Granite State",
+  },
+  {
     name: "New Jersey",
     slug: "new-jersey",
     abbr: "NJ",
@@ -84,7 +90,7 @@ export default async function HomePage() {
             Browse by State
           </h2>
           <p className="text-gray-500 text-center mb-10">
-            Find licensed waste haulers serving Maine, Massachusetts, New Jersey, New York, Pennsylvania, and Vermont
+            Find licensed waste haulers serving Maine, Massachusetts, New Hampshire, New Jersey, New York, Pennsylvania, and Vermont
           </p>
 
           <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-6">

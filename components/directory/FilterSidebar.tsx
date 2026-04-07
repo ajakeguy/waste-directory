@@ -9,6 +9,7 @@ const STATE_OPTIONS = [
   { label: "All States", value: "" },
   { label: "Maine", value: "ME" },
   { label: "Massachusetts", value: "MA" },
+  { label: "New Hampshire", value: "NH" },
   { label: "New Jersey", value: "NJ" },
   { label: "New York", value: "NY" },
   { label: "Pennsylvania", value: "PA" },

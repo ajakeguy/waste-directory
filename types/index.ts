@@ -55,6 +55,7 @@ export const SERVICE_TYPES = Object.keys(SERVICE_TYPE_LABELS) as ServiceType[]
 export const STATE_SLUG_TO_CODE: Record<string, string> = {
   maine: "ME",
   massachusetts: "MA",
+  "new-hampshire": "NH",
   "new-jersey": "NJ",
   "new-york": "NY",
   pennsylvania: "PA",
@@ -64,6 +65,7 @@ export const STATE_SLUG_TO_CODE: Record<string, string> = {
 export const STATE_CODE_TO_SLUG: Record<string, string> = {
   ME: "maine",
   MA: "massachusetts",
+  NH: "new-hampshire",
   NJ: "new-jersey",
   NY: "new-york",
   PA: "pennsylvania",
@@ -73,6 +75,7 @@ export const STATE_CODE_TO_SLUG: Record<string, string> = {
 export const STATE_SLUG_TO_NAME: Record<string, string> = {
   maine: "Maine",
   massachusetts: "Massachusetts",
+  "new-hampshire": "New Hampshire",
   "new-jersey": "New Jersey",
   "new-york": "New York",
   pennsylvania: "Pennsylvania",

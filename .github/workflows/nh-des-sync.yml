@@ -1,10 +1,7 @@
 name: NH DES Hauler Sync
 
 on:
-  # Run on the 8th of each month at 3am UTC
-  schedule:
-    - cron: "0 3 8 * *"
-  # Allow manual runs from the GitHub Actions UI
+  # Manual runs only — the CSV is checked into the repo and updated by hand
   workflow_dispatch:
 
 jobs:
@@ -23,7 +20,7 @@ jobs:
           python-version: "3.11"
 
       - name: Install Python dependencies
-        run: pip install requests pandas beautifulsoup4 pdfplumber supabase
+        run: pip install requests pandas supabase
 
       - name: Run NH DES hauler importer
         run: python pipelines/nh-des-import/index.py

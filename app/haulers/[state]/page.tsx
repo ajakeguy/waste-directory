@@ -266,6 +266,11 @@ const LICENSE_METADATA_LABELS: Record<string, string> = {
   vt_permit_type:             "Permit Type (VT)",
   vt_permit_number:           "Permit Number (VT)",
   vt_waste_type_raw:          "Waste Type (VT)",
+  // New Hampshire DES
+  nh_date_registered:         "Registered Since",
+  nh_contact_name:            "Contact",
+  nh_contact_email:           "Email",
+  nh_website:                 "Website",
   // NYC BIC
   bic_number:                 "BIC License Number",
   boro:                       "Borough",
