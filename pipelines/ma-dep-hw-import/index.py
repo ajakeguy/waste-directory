@@ -16,7 +16,8 @@ Source PDF (updated periodically, must be placed manually):
 PDF text format — each record starts with a license number:
   HW05-MA-XXXX  COMPANY NAME  MM/DD/YYYY  (NNN) NNN-NNNN  ADDRESS  CITY  ST  ZIP  EPA#
 
-Records are split on the HW05-MA-\\d+ pattern, then parsed field-by-field.
+Records are split on the HW05-MA-\\d+ pattern. The company name is extracted
+as everything between the license number and the first MM/DD/YYYY date.
 
 Required env vars:
     SUPABASE_URL
@@ -43,6 +44,13 @@ BATCH_SIZE  = 50
 # License number pattern: HW05-MA-NNNN
 LICENSE_RE = re.compile(r"HW05-MA-\d+")
 
+# Name is everything between the license number and the first date (MM/DD/YYYY).
+# The date anchors the end of the name — the PDF format is always:
+#   LICENSE  NAME  DATE  PHONE  ADDRESS  STATE  ZIP  EPA#
+NAME_DATE_RE = re.compile(
+    r"^([A-Z][A-Z0-9\s\&\.\,\-\/\(\)]+?)\s+(\d{1,2}/\d{1,2}/\d{4})"
+)
+
 # Date pattern: MM/DD/YYYY
 DATE_RE    = re.compile(r"\b(\d{1,2}/\d{1,2}/\d{4})\b")
 
@@ -58,8 +66,20 @@ STATE_ADDR_RE = re.compile(r"\b([A-Z]{2})\s+\d{5}")
 # EPA ID: pattern like MAD000123456 or similar
 EPA_RE     = re.compile(r"\b[A-Z]{3}\d{6,}\b")
 
+# Acronyms to keep uppercase after title-casing
+_ACRONYMS = {"LLC", "INC", "LTD", "DBA", "NE", "NW", "SE", "SW", "USA", "US", "EPA"}
+
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
+def title_case(s: str) -> str:
+    """Title-case a string, preserving common business acronyms."""
+    words = s.strip().title().split()
+    result = []
+    for w in words:
+        result.append(w.upper() if w.upper() in _ACRONYMS else w)
+    return " ".join(result)
+
 
 def slugify(text: str) -> str:
     text = text.lower().strip()
@@ -152,8 +172,10 @@ def parse_records(full_text: str) -> list[dict]:
     """
     Split on each HW05-MA-\\d+ occurrence (look-ahead so the delimiter is
     kept as the start of each chunk), then parse each chunk into a record dict.
+
+    Name is extracted as everything between the license number and the first
+    MM/DD/YYYY date — this cleanly avoids address text bleeding into the name.
     """
-    # Normalise whitespace but preserve enough structure to parse
     chunks = re.split(r"(?=HW05-MA-\d+)", full_text)
     chunks = [c.strip() for c in chunks if c.strip()]
     print(f"\n  Raw chunks (license blocks): {len(chunks)}")
@@ -169,11 +191,22 @@ def parse_records(full_text: str) -> list[dict]:
         license_number = lic_m.group(0)
         remainder = chunk[lic_m.end():].strip()
 
-        # ── Expiration date ───────────────────────────────────────────────────
-        date_m = DATE_RE.search(remainder)
-        expiry_str = date_m.group(1) if date_m else None
-        if date_m:
-            remainder = remainder[:date_m.start()] + remainder[date_m.end():]
+        # ── Name: everything before the first date ────────────────────────────
+        # The PDF format is: LICENSE  NAME  DATE  PHONE  ADDRESS  ZIP  EPA#
+        # Using the date as an anchor gives a clean name boundary.
+        nd_m = NAME_DATE_RE.match(remainder)
+        if nd_m:
+            name_raw   = nd_m.group(1).strip()
+            expiry_str = nd_m.group(2)
+            # Advance past the name+date
+            remainder  = remainder[nd_m.end():].strip()
+        else:
+            # Fallback: try the date-only extraction used previously
+            name_raw   = ""
+            date_m     = DATE_RE.search(remainder)
+            expiry_str = date_m.group(1) if date_m else None
+            if date_m:
+                remainder = remainder[:date_m.start()] + remainder[date_m.end():]
 
         # ── Phone ─────────────────────────────────────────────────────────────
         phone_m = PHONE_RE.search(remainder)
@@ -188,34 +221,30 @@ def parse_records(full_text: str) -> list[dict]:
             remainder = remainder[:epa_m.start()] + remainder[epa_m.end():]
 
         # ── ZIP & state from address block ────────────────────────────────────
-        zip_m  = ZIP_RE.search(remainder)
+        zip_m    = ZIP_RE.search(remainder)
         zip_code = zip_m.group(1) if zip_m else None
 
         state_m = STATE_ADDR_RE.search(remainder)
         state   = state_m.group(1) if state_m else None
 
-        # ── Clean up remainder to get name + address fragments ────────────────
-        # Remove extracted fields' surrounding noise
+        # ── If name wasn't captured by date-anchor, fall back to address split ─
         remainder = re.sub(r"\s+", " ", remainder).strip()
-
-        # Heuristic: the company name is the first "word group" before an
-        # address indicator (digit-led street, PO Box) or state/zip.
-        # Try splitting on address boundary first.
-        addr_start = re.search(
-            r"(?:^|\s)(\d+\s+[A-Z]|P\.?O\.?\s*BOX|\d{5})",
-            remainder, re.IGNORECASE
-        )
-
-        if addr_start:
-            name_raw    = remainder[:addr_start.start()].strip()
-            address_raw = remainder[addr_start.start():].strip()
+        if not name_raw:
+            addr_start = re.search(
+                r"(?:^|\s)(\d+\s+[A-Z]|P\.?O\.?\s*BOX|\d{5})",
+                remainder, re.IGNORECASE
+            )
+            if addr_start:
+                name_raw    = remainder[:addr_start.start()].strip()
+                address_raw = remainder[addr_start.start():].strip()
+            else:
+                parts       = re.split(r"\s{2,}|\n", remainder)
+                name_raw    = parts[0].strip() if parts else remainder.strip()
+                address_raw = " ".join(parts[1:]).strip() if len(parts) > 1 else ""
         else:
-            # Fall back: split on double-space or newline
-            parts = re.split(r"\s{2,}|\n", remainder)
-            name_raw    = parts[0].strip() if parts else remainder.strip()
-            address_raw = " ".join(parts[1:]).strip() if len(parts) > 1 else ""
+            address_raw = remainder
 
-        name = name_raw.title().strip()
+        name = title_case(name_raw)
         if not name or len(name) < 2:
             continue
 
@@ -259,7 +288,7 @@ def parse_records(full_text: str) -> list[dict]:
 def main() -> None:
     print("=" * 60)
     print("MA DEP Hazardous Waste Transporter Importer")
-    print(f"Run date: {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}")
+    print(f"Run date: {datetime.now().strftime('%Y-%m-%d %H:%M UTC')}")
     print("=" * 60)
 
     # ── Load PDF from disk ────────────────────────────────────────────────────
@@ -274,8 +303,8 @@ def main() -> None:
         sys.exit(1)
 
     # ── Filter expired ────────────────────────────────────────────────────────
-    active_records   = [r for r in parsed if is_active(r["expiry_date"])]
-    skipped_expired  = len(parsed) - len(active_records)
+    active_records  = [r for r in parsed if is_active(r["expiry_date"])]
+    skipped_expired = len(parsed) - len(active_records)
     print(f"\n  Active licenses (>= 2024): {len(active_records)}")
     print(f"  Skipped (expired pre-2024): {skipped_expired}")
 
@@ -292,43 +321,23 @@ def main() -> None:
 
     supabase: Client = create_client(supabase_url, service_role_key)
 
-    # ── Load existing slugs ───────────────────────────────────────────────────
-    print("\n  Loading existing slugs from DB...")
-    existing_slugs: set[str] = set()
-    page_size = 1000
-    offset    = 0
-    while True:
-        resp = (
-            supabase.table("organizations")
-            .select("slug")
-            .range(offset, offset + page_size - 1)
-            .execute()
-        )
-        rows_page = resp.data or []
-        for r in rows_page:
-            existing_slugs.add(r["slug"])
-        if len(rows_page) < page_size:
-            break
-        offset += page_size
-    print(f"  Existing orgs in DB: {len(existing_slugs)}")
+    # ── Process each active record: upsert ───────────────────────────────────
+    print("\n  Processing records (upsert)...")
 
-    # ── Build insert list ─────────────────────────────────────────────────────
-    to_insert:    list[dict]     = []
-    already_in:   int            = 0
+    inserted      = 0
+    updated       = 0
+    errors        = 0
     slug_counter: dict[str, int] = {}
+
+    # Track slugs assigned this run to avoid intra-run collisions on inserts
+    assigned_slugs: set[str] = set()
 
     for rec in active_records:
         base_slug = make_slug(rec["name"], rec.get("city") or "")
         if not base_slug:
             continue
-        if base_slug in existing_slugs:
-            already_in += 1
-            continue
-        n    = slug_counter.get(base_slug, 0)
-        slug = base_slug if n == 0 else f"{base_slug}-{n}"
-        slug_counter[base_slug] = n + 1
-        existing_slugs.add(slug)
 
+        # ── Build license metadata for this record ────────────────────────────
         license_metadata: dict[str, str] = {}
         if rec["license_number"]:
             license_metadata["ma_hw_license"]    = rec["license_number"]
@@ -337,40 +346,75 @@ def main() -> None:
         if rec["epa_number"]:
             license_metadata["ma_hw_epa_number"] = rec["epa_number"]
 
-        to_insert.append({
-            "slug":                slug,
-            "name":                rec["name"],
-            "address":             rec["address"],
-            "city":                rec["city"],
-            "state":               rec["state"] or "MA",
-            "zip":                 rec["zip"],
-            "phone":               rec["phone"],
-            "org_type":            "hauler",
-            "service_types":       ["hazardous_waste"],
-            "service_area_states": ["MA"],
-            "license_metadata":    license_metadata,
-            "data_source":         DATA_SOURCE,
-            "verified":            True,
-            "active":              True,
-        })
-
-    print(f"  Already in DB:  {already_in}")
-    print(f"  To insert:      {len(to_insert)}")
-
-    # ── Batch insert ──────────────────────────────────────────────────────────
-    inserted = 0
-    errors   = 0
-
-    for i in range(0, len(to_insert), BATCH_SIZE):
-        batch     = to_insert[i : i + BATCH_SIZE]
-        batch_num = i // BATCH_SIZE + 1
+        # ── Look up existing record by slug ───────────────────────────────────
         try:
-            supabase.table("organizations").insert(batch).execute()
-            inserted += len(batch)
-            print(f"  [OK] Batch {batch_num}: inserted {len(batch)} records")
+            existing = (
+                supabase.table("organizations")
+                .select("id,service_area_states,service_types,license_metadata")
+                .eq("slug", base_slug)
+                .execute()
+            )
         except Exception as exc:
-            print(f"  [ERR] Batch {batch_num} failed: {exc}")
+            print(f"  [ERR] Lookup failed for {base_slug}: {exc}")
             errors += 1
+            continue
+
+        if existing.data:
+            # ── UPDATE existing record ────────────────────────────────────────
+            row   = existing.data[0]
+            areas = list(row.get("service_area_states") or [])
+            types = list(row.get("service_types") or [])
+            meta  = dict(row.get("license_metadata") or {})
+
+            if "MA" not in areas:
+                areas.append("MA")
+            if "hazardous_waste" not in types:
+                types.append("hazardous_waste")
+            meta.update(license_metadata)
+
+            try:
+                supabase.table("organizations").update({
+                    "service_area_states": areas,
+                    "service_types":       types,
+                    "license_metadata":    meta,
+                }).eq("id", row["id"]).execute()
+                updated += 1
+            except Exception as exc:
+                print(f"  [ERR] Update failed for {base_slug}: {exc}")
+                errors += 1
+
+        else:
+            # ── INSERT new record ─────────────────────────────────────────────
+            n    = slug_counter.get(base_slug, 0)
+            slug = base_slug if n == 0 else f"{base_slug}-{n}"
+            # Increment until we find a slug not used this run
+            while slug in assigned_slugs:
+                n += 1
+                slug = f"{base_slug}-{n}"
+            slug_counter[base_slug] = n + 1
+            assigned_slugs.add(slug)
+
+            try:
+                supabase.table("organizations").insert({
+                    "slug":                slug,
+                    "name":                rec["name"],
+                    "address":             rec["address"],
+                    "city":                rec["city"],
+                    "state":               rec["state"] or "MA",
+                    "zip":                 rec["zip"],
+                    "phone":               rec["phone"],
+                    "org_type":            "hauler",
+                    "service_types":       ["hazardous_waste"],
+                    "service_area_states": ["MA"],
+                    "license_metadata":    license_metadata,
+                    "data_source":         DATA_SOURCE,
+                    "verified":            True,
+                    "active":              True,
+                }).execute()
+                inserted += 1
+            except Exception as exc:
+                print(f"  [ERR] Insert failed for {slug}: {exc}")
+                errors += 1
 
     # ── Summary ───────────────────────────────────────────────────────────────
     print("\n" + "=" * 60)
@@ -379,8 +423,8 @@ def main() -> None:
     print(f"  Records parsed:             {len(parsed)}")
     print(f"  Active licenses:            {len(active_records)}")
     print(f"  Skipped (expired pre-2024): {skipped_expired}")
-    print(f"  Already in DB:              {already_in}")
-    print(f"  Inserted:                   {inserted}")
+    print(f"  Inserted (new):             {inserted}")
+    print(f"  Updated (existing):         {updated}")
     print(f"  Errors:                     {errors}")
 
     if errors:
