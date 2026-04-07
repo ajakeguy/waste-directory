@@ -98,6 +98,75 @@ export function generateStaticParams() {
   return VALID_STATE_SLUGS.map((state) => ({ state }));
 }
 
+// ── State info banners ────────────────────────────────────────────────────────
+
+type StateInfo = {
+  source: string;
+  govBody: string;
+  requirements: string;
+  lastUpdated: string;
+};
+
+const STATE_INFO: Record<string, StateInfo> = {
+  maine: {
+    source: "Maine DEP Non-Hazardous Waste Transporter List",
+    govBody: "Maine Department of Environmental Protection (ME DEP)",
+    requirements:
+      "Waste transporters operating in Maine must be licensed by the ME DEP under 38 M.R.S. §1304. Licenses are renewed annually and categorized by waste type: A (Special/C&D), B (Municipal Solid Waste), and C (Septage). Operating without a valid license is a civil violation.",
+    lastUpdated: "Updated from ME DEP active transporter list (2026)",
+  },
+  massachusetts: {
+    source: "Massachusetts DEP Solid Waste Transporter Registrations",
+    govBody: "Massachusetts Department of Environmental Protection (MassDEP)",
+    requirements:
+      "Solid waste transporters in Massachusetts must register with MassDEP under 310 CMR 19.000. Registration requires proof of vehicle insurance and compliance with state solid waste regulations. Haulers transporting septage must also comply with 314 CMR 5.00.",
+    lastUpdated: "Updated from MassDEP transporter registration data (2025–2026)",
+  },
+  "new-hampshire": {
+    source: "NH DES Registered Solid Waste Hauler List",
+    govBody: "New Hampshire Department of Environmental Services (NH DES)",
+    requirements:
+      "Solid waste collectors operating in New Hampshire must register with NH DES under RSA 149-M:29-a. Registration is renewed annually and requires disclosure of company name, address, and contact information. Haulers must comply with the NH Solid Waste Management Act and applicable local ordinances.",
+    lastUpdated: "Updated from NH DES registered hauler list (2025)",
+  },
+  "new-jersey": {
+    source: "New Jersey DEP A-901 Solid Waste Transporter Licenses",
+    govBody: "New Jersey Department of Environmental Protection (NJ DEP) — Division of Solid and Hazardous Waste",
+    requirements:
+      "Commercial solid waste transporters in New Jersey must hold an A-901 license issued by NJ DEP under N.J.S.A. 13:1E-126 et seq. The licensing process includes a criminal background investigation. Unlicensed transport of solid waste is a crime under New Jersey law. Licenses must be renewed every three years.",
+    lastUpdated: "Updated from NJ DEP A-901 license database (2025–2026)",
+  },
+  "new-york": {
+    source: "New York State DEC Solid Waste Transporter Registrations",
+    govBody: "New York State Department of Environmental Conservation (NYSDEC)",
+    requirements:
+      "Solid waste transporters in New York must register with NYSDEC under 6 NYCRR Part 364. Registration requires a vehicle list, insurance certificates, and compliance with state solid waste regulations. NYC commercial haulers are additionally licensed by the Business Integrity Commission (BIC).",
+    lastUpdated: "Updated from NYSDEC transporter registration data and NYC BIC license database (2025–2026)",
+  },
+  pennsylvania: {
+    source: "Pennsylvania DEP Waste Hauler (WH) Registration Database",
+    govBody: "Pennsylvania Department of Environmental Protection (PA DEP)",
+    requirements:
+      "Municipal and residual waste haulers in Pennsylvania must register with PA DEP under the Solid Waste Management Act (35 P.S. §§ 6018.101–6018.1003). Registration requires disclosure of vehicle information, insurance, and waste types transported. Registrations are renewed annually.",
+    lastUpdated: "Updated from PA DEP waste hauler registration database (2025–2026)",
+  },
+  "rhode-island": {
+    source: "Rhode Island Resource Recovery Corporation (RIRRC) Waste and Recycling Hauler List",
+    govBody:
+      "Rhode Island Resource Recovery Corporation (RIRRC) and RI Department of Environmental Management (RIDEM)",
+    requirements:
+      "Waste haulers operating in Rhode Island must register with RIRRC and comply with the Rhode Island Refuse Disposal Act (RIGL Chapter 23-18.9). Commercial haulers must also comply with the RI Recycling Act. RIRRC operates the Central Landfill in Johnston, RI — the state's primary disposal facility. Haulers transporting C&D debris must follow additional RIDEM regulations.",
+    lastUpdated: "Updated from RIRRC hauler list (October 2024)",
+  },
+  vermont: {
+    source: "Vermont DEC Solid Waste Hauler Permit Database",
+    govBody: "Vermont Department of Environmental Conservation (VT DEC) — Waste Management & Prevention Division",
+    requirements:
+      "Solid waste haulers in Vermont must hold a permit issued by VT DEC under 10 V.S.A. Chapter 159. Permits specify the types of waste authorized for collection and transport. Haulers must comply with Vermont's Universal Recycling Law (Act 148), which requires separate collection of food scraps, leaf and yard debris, and recyclables.",
+    lastUpdated: "Updated from VT DEC solid waste permit database (2025)",
+  },
+};
+
 // ── State landing page ────────────────────────────────────────────────────────
 
 function ResultsSkeleton() {
@@ -212,6 +281,33 @@ async function StateLandingPage({
 
       {/* Search + results */}
       <div className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+
+        {/* About this data banner */}
+        {STATE_INFO[segment] && (
+          <div className="bg-white border border-gray-200 rounded-xl p-6 mb-6">
+            <h2 className="text-base font-semibold text-gray-900 mb-3">
+              About this data
+            </h2>
+            <div className="space-y-3 text-sm text-gray-600">
+              <p>
+                <span className="font-medium text-gray-800">Data source:</span>{" "}
+                {STATE_INFO[segment].source}
+              </p>
+              <p>
+                <span className="font-medium text-gray-800">Governing body:</span>{" "}
+                {STATE_INFO[segment].govBody}
+              </p>
+              <p>
+                <span className="font-medium text-gray-800">Operating requirements:</span>{" "}
+                {STATE_INFO[segment].requirements}
+              </p>
+              <p className="text-xs text-gray-400 border-t border-gray-100 pt-3 mt-1">
+                {STATE_INFO[segment].lastUpdated}
+              </p>
+            </div>
+          </div>
+        )}
+
         {/* Toolbar: search bar + per-page selector */}
         <div className="flex flex-col sm:flex-row gap-3 mb-6">
           <div className="flex-1">
@@ -269,6 +365,9 @@ const LICENSE_METADATA_LABELS: Record<string, string> = {
   // New Hampshire DES
   nh_date_registered:         "Registered Since",
   // nh_contact_name / nh_contact_email / nh_website → surfaced in Contact Information
+  // Rhode Island RIRRC
+  ri_materials_hauled:        "Materials Hauled (RI)",
+  // ri_contact_name / ri_contact_email → surfaced in Contact Information
   // NYC BIC
   bic_number:                 "BIC License Number",
   boro:                       "Borough",

@@ -13,6 +13,7 @@ const STATE_OPTIONS = [
   { label: "New Jersey", value: "NJ" },
   { label: "New York", value: "NY" },
   { label: "Pennsylvania", value: "PA" },
+  { label: "Rhode Island", value: "RI" },
   { label: "Vermont", value: "VT" },
 ];
 

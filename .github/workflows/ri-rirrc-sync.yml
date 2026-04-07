@@ -1,0 +1,32 @@
+name: RI RIRRC Hauler Sync
+
+on:
+  # Monthly on the 15th at 3am UTC — PDF updates irregularly
+  schedule:
+    - cron: "0 3 15 * *"
+  # Allow manual runs from the GitHub Actions UI
+  workflow_dispatch:
+
+jobs:
+  import-ri-rirrc:
+    name: Import RI RIRRC registered waste haulers
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Python dependencies
+        run: pip install requests pdfplumber supabase
+
+      - name: Run RI RIRRC hauler importer
+        run: python pipelines/ri-rirrc-import/index.py
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}

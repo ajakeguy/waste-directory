@@ -59,6 +59,7 @@ export const STATE_SLUG_TO_CODE: Record<string, string> = {
   "new-jersey": "NJ",
   "new-york": "NY",
   pennsylvania: "PA",
+  "rhode-island": "RI",
   vermont: "VT",
 }
 
@@ -69,6 +70,7 @@ export const STATE_CODE_TO_SLUG: Record<string, string> = {
   NJ: "new-jersey",
   NY: "new-york",
   PA: "pennsylvania",
+  RI: "rhode-island",
   VT: "vermont",
 }
 
@@ -79,6 +81,7 @@ export const STATE_SLUG_TO_NAME: Record<string, string> = {
   "new-jersey": "New Jersey",
   "new-york": "New York",
   pennsylvania: "Pennsylvania",
+  "rhode-island": "Rhode Island",
   vermont: "Vermont",
 }
 
