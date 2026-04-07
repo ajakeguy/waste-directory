@@ -61,10 +61,25 @@ function Field({
   );
 }
 
-function Stat({ label, value, sub }: { label: string; value: string; sub?: string }) {
+function Stat({
+  label, value, sub, tooltip,
+}: {
+  label: string; value: string; sub?: string; tooltip?: string;
+}) {
   return (
     <div className="bg-white rounded-lg border border-gray-100 px-3 py-2.5">
-      <p className="text-xs text-gray-500 mb-0.5">{label}</p>
+      <div className="flex items-center gap-1 mb-0.5">
+        <p className="text-xs text-gray-500">{label}</p>
+        {tooltip && (
+          <span
+            title={tooltip}
+            className="text-gray-300 hover:text-gray-500 cursor-help text-xs leading-none"
+            aria-label={tooltip}
+          >
+            ⓘ
+          </span>
+        )}
+      </div>
       <p className="text-base font-bold text-gray-900">{value}</p>
       {sub && <p className="text-xs text-gray-400">{sub}</p>}
     </div>
@@ -277,7 +292,9 @@ export function RouteCostCalculator({
 
           {/* Results */}
           <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-            <Stat label="Drive time"   value={`${fmt(driveMin, 0)} min`}   sub={`${fmt(totalMiles, 1)} mi @ ${AVG_SPEED_MPH} mph`} />
+            <Stat label="Drive time"   value={`${fmt(driveMin, 0)} min`}
+              sub={`${fmt(totalMiles, 1)} mi ÷ ${AVG_SPEED_MPH} mph avg (urban)`}
+              tooltip="Drive time estimated at 25 mph average urban speed. Actual time varies with traffic, road type, and stops." />
             <Stat label="Service time" value={`${fmt(serviceMin, 0)} min`} sub={`${stopCount} stops × ${serviceTime} min`} />
             <Stat label="Total time"   value={`${fmt(totalHrs, 1)} hrs`}   sub={`${fmt(totalMin, 0)} min`} />
             <Stat label="Fuel cost"    value={`$${fmt(fuelCost)}`}         sub={`${fmt(gallons, 1)} gal`} />

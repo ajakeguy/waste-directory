@@ -4,14 +4,15 @@
  * components/routes/RouteViewClient.tsx
  *
  * Client component for the route view page.
- * Handles: copy-to-clipboard, CSV export, delete, and the Leaflet map.
+ * Two-column layout: sticky left sidebar (header, actions, map, cost estimator)
+ * and scrollable right column (stop list).
  */
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import {
-  Copy, Check, Download, Printer, Pencil, Trash2, MapPin,
+  Copy, Check, Download, Printer, Pencil, Trash2, MapPin, RefreshCw,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import dynamic from "next/dynamic";
@@ -24,15 +25,13 @@ const RouteMap = dynamic(() => import("@/components/routes/RouteMap"), {
   ),
 });
 import { haversineDistance, kmToMiles } from "@/lib/route-optimizer";
+import { fetchRoadDistanceMatrix } from "@/lib/road-routing";
 import { RouteCostCalculator, DEFAULTS, type CostAssumptions } from "@/components/routes/RouteCostCalculator";
 import type { SavedRoute, RouteStop } from "@/types";
 
 type LatLng = { lat: number; lng: number };
 
 function parseStartEnd(route: SavedRoute): { startCoords: LatLng | null; endCoords: LatLng | null } {
-  // Heuristic: try to derive coords from first/last geocoded stop as fallback.
-  // In practice they come from the stored stops list (start/end aren't stored as coords separately).
-  // Use first/last geocoded stop as bounds hint.
   const geocoded = route.stops.filter((s) => s.geocoded && s.lat && s.lng);
   if (geocoded.length === 0) return { startCoords: null, endCoords: null };
   return {
@@ -55,6 +54,11 @@ export function RouteViewClient({ route }: Props) {
   const [showConfirm, setShowConfirm] = useState(false);
   const [assumptions, setAssumptions] = useState<CostAssumptions>(DEFAULTS);
 
+  // Real road distance fetched on load (replaces stale straight-line saved value)
+  const [realRoadMiles,    setRealRoadMiles]    = useState<number | null>(null);
+  const [fetchingRoad,     setFetchingRoad]     = useState(false);
+  const [roadFetchFailed,  setRoadFetchFailed]  = useState(false);
+
   // Mutable copy of stops so inline yards edits update the UI immediately
   const initialStops: RouteStop[] = route.optimized_order
     ? route.optimized_order.map((i) => route.stops[i]).filter(Boolean)
@@ -63,6 +67,36 @@ export function RouteViewClient({ route }: Props) {
 
   const { startCoords, endCoords } = parseStartEnd(route);
 
+  // ── Auto-fetch real road distance on mount ────────────────────────────────────
+  // The saved total_distance_miles may have been stored as haversine (straight-line).
+  // Silently refresh it via the Matrix API on page load.
+
+  useEffect(() => {
+    const geocoded = orderedStops.filter((s) => s.geocoded && s.lat && s.lng);
+    if (!startCoords || !endCoords || geocoded.length === 0) return;
+
+    setFetchingRoad(true);
+    const stopCoords = geocoded.map((s) => ({ lat: s.lat!, lng: s.lng! }));
+
+    fetchRoadDistanceMatrix(startCoords, stopCoords, endCoords)
+      .then((miles) => {
+        if (miles !== null) {
+          setRealRoadMiles(miles);
+        } else {
+          setRoadFetchFailed(true);
+        }
+      })
+      .catch(() => setRoadFetchFailed(true))
+      .finally(() => setFetchingRoad(false));
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Best available distance for cost estimator: fresh road > saved value
+  const savedMiles = route.total_distance_miles
+    ?? (route.total_distance_km ? kmToMiles(route.total_distance_km) : null);
+  const displayMiles = realRoadMiles ?? savedMiles;
+  const isEstimated = realRoadMiles === null && !route.total_distance_miles;
+
   // ── Inline yards editing with auto-save ───────────────────────────────────────
 
   function updateStopYards(id: string, yards: number | undefined) {
@@ -70,7 +104,6 @@ export function RouteViewClient({ route }: Props) {
   }
 
   async function saveYardsOnBlur() {
-    // Persist the full stops array (with updated yards) back to the route
     await fetch(`/api/routes/${route.id}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
@@ -111,7 +144,6 @@ export function RouteViewClient({ route }: Props) {
       prevStop = stop;
     });
 
-    // End
     const lastStop = orderedStops[orderedStops.length - 1];
     let lastDist = "-";
     if (lastStop?.lat && lastStop?.lng) {
@@ -121,8 +153,7 @@ export function RouteViewClient({ route }: Props) {
     }
     rows.push([String(orderedStops.length + 1), "End", route.end_address, lastDist, "-"]);
 
-    // ── Cost analysis section ──────────────────────────────────────────────────
-    const totalMi = route.total_distance_miles ?? (route.total_distance_km ? kmToMiles(route.total_distance_km) : null);
+    const totalMi = displayMiles;
     if (totalMi !== null && orderedStops.length > 0) {
       const AVG_SPEED_MPH = 25;
       const a = assumptions;
@@ -193,39 +224,139 @@ export function RouteViewClient({ route }: Props) {
 
   // ── Render ─────────────────────────────────────────────────────────────────
 
+  const stopCount = orderedStops.length;
+
   return (
-    <div className="max-w-6xl mx-auto px-4 sm:px-6 py-8">
+    <div className="max-w-7xl mx-auto px-4 sm:px-6 py-8">
+      <div className="flex flex-col lg:flex-row gap-6 items-start">
 
-      {/* Header */}
-      <div className="mb-6">
-        <div className="flex items-start justify-between gap-4 flex-wrap">
-          <div>
-            <h1 className="text-2xl font-bold text-gray-900">{route.route_name}</h1>
-            <p className="text-gray-500 text-sm mt-0.5">
-              {orderedStops.length} stop{orderedStops.length !== 1 ? "s" : ""}
-              {(route.total_distance_miles ?? (route.total_distance_km ? kmToMiles(route.total_distance_km) : null))
-                ? ` · ${(route.total_distance_miles ?? kmToMiles(route.total_distance_km!)).toFixed(1)} mi total`
-                : ""}
-            </p>
+        {/* ── LEFT — sticky sidebar (header + actions + map + cost estimator) ── */}
+        <div className="w-full lg:w-2/5 lg:sticky lg:top-6 flex flex-col gap-4">
+
+          {/* Route header */}
+          <div className="bg-white rounded-xl border border-gray-200 px-5 py-4">
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <h1 className="text-xl font-bold text-gray-900 leading-tight">{route.route_name}</h1>
+                <div className="flex items-center gap-2 mt-1 flex-wrap">
+                  <p className="text-sm text-gray-500">
+                    {stopCount} stop{stopCount !== 1 ? "s" : ""}
+                    {displayMiles !== null && (
+                      <>
+                        {" · "}
+                        {fetchingRoad ? (
+                          <span className="inline-flex items-center gap-1 text-gray-400">
+                            <RefreshCw className="size-3 animate-spin" />
+                            Fetching road distance…
+                          </span>
+                        ) : (
+                          <span className={realRoadMiles !== null ? "text-[#2D6A4F] font-medium" : ""}>
+                            {displayMiles.toFixed(1)} mi
+                            {realRoadMiles !== null && <span className="text-gray-400 font-normal"> road</span>}
+                            {roadFetchFailed && savedMiles !== null && <span className="text-gray-400 font-normal"> (est.)</span>}
+                          </span>
+                        )}
+                      </>
+                    )}
+                  </p>
+                  <span
+                    className={`text-xs px-2 py-0.5 rounded-full font-medium ${
+                      route.status === "optimized"
+                        ? "bg-[#2D6A4F]/10 text-[#2D6A4F]"
+                        : "bg-gray-100 text-gray-500"
+                    }`}
+                  >
+                    {route.status === "optimized" ? "Optimized" : "Draft"}
+                  </span>
+                </div>
+              </div>
+            </div>
           </div>
-          <span
-            className={`text-xs px-2.5 py-1 rounded-full font-medium ${
-              route.status === "optimized"
-                ? "bg-[#2D6A4F]/10 text-[#2D6A4F]"
-                : "bg-gray-100 text-gray-500"
-            }`}
-          >
-            {route.status === "optimized" ? "Optimized" : "Draft"}
-          </span>
+
+          {/* Action buttons */}
+          <div className="flex flex-col gap-2">
+            <Link href={`/routes/${route.id}/edit`} className="block">
+              <Button variant="outline" className="w-full gap-2">
+                <Pencil className="size-4" /> Edit Route
+              </Button>
+            </Link>
+
+            <button
+              onClick={() => window.open(`/routes/${route.id}/print`, "_blank")}
+              className="w-full flex items-center gap-2 h-9 px-4 rounded-lg border border-gray-200 text-sm text-gray-600 hover:bg-gray-50 transition-colors"
+            >
+              <Printer className="size-4" /> Print / PDF
+            </button>
+
+            <button
+              onClick={exportCsv}
+              className="w-full flex items-center gap-2 h-9 px-4 rounded-lg border border-gray-200 text-sm text-gray-600 hover:bg-gray-50 transition-colors"
+            >
+              <Download className="size-4" /> Export CSV
+            </button>
+
+            <div className="pt-1">
+              {showConfirm ? (
+                <div className="space-y-2">
+                  <p className="text-xs text-gray-500 text-center">Delete this route?</p>
+                  <div className="flex gap-2">
+                    <Button size="sm" variant="outline" className="flex-1" onClick={() => setShowConfirm(false)}>
+                      Cancel
+                    </Button>
+                    <Button
+                      size="sm"
+                      className="flex-1 bg-rose-600 hover:bg-rose-700 text-white"
+                      onClick={deleteRoute}
+                      disabled={deleting}
+                    >
+                      Delete
+                    </Button>
+                  </div>
+                </div>
+              ) : (
+                <button
+                  onClick={() => setShowConfirm(true)}
+                  className="w-full flex items-center gap-2 h-9 px-4 rounded-lg text-sm text-rose-500 hover:bg-rose-50 transition-colors"
+                >
+                  <Trash2 className="size-4" /> Delete Route
+                </button>
+              )}
+            </div>
+          </div>
+
+          {/* Missing geocode warning */}
+          {route.stops.some((s) => !s.geocoded) && (
+            <div className="rounded-lg bg-amber-50 border border-amber-200 px-3 py-2 text-xs text-amber-700">
+              <MapPin className="size-3 inline mr-1" />
+              {route.stops.filter((s) => !s.geocoded).length} stop(s) not geocoded — map may be incomplete.
+            </div>
+          )}
+
+          {/* Map */}
+          <div className="rounded-xl border border-gray-200 overflow-hidden">
+            <RouteMap
+              startCoords={startCoords}
+              endCoords={endCoords}
+              stops={orderedStops}
+              roadGeojson={route.road_geometry ?? null}
+              height={400}
+            />
+          </div>
+
+          {/* Cost estimator */}
+          {displayMiles !== null && stopCount > 0 && (
+            <RouteCostCalculator
+              totalMiles={displayMiles}
+              stopCount={stopCount}
+              stops={orderedStops}
+              isEstimated={isEstimated}
+              onAssumptionsChange={setAssumptions}
+            />
+          )}
         </div>
-      </div>
 
-      <div className="flex flex-col lg:flex-row gap-6">
-
-        {/* ── Main content ─────────────────────────────────────────────────── */}
-        <div className="flex-1 min-w-0 space-y-6">
-
-          {/* Stop list */}
+        {/* ── RIGHT — scrollable stop list ──────────────────────────────────── */}
+        <div className="w-full lg:w-3/5 min-w-0">
           <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
             <div className="px-5 py-3 border-b border-gray-100 bg-gray-50">
               <h2 className="text-sm font-semibold text-gray-700 uppercase tracking-wide">
@@ -314,114 +445,8 @@ export function RouteViewClient({ route }: Props) {
               </div>
             </div>
           </div>
-
-          {/* Map */}
-          <div className="rounded-xl border border-gray-200 overflow-hidden">
-            <RouteMap
-              startCoords={startCoords}
-              endCoords={endCoords}
-              stops={orderedStops}
-              roadGeojson={route.road_geometry ?? null}
-              height={400}
-            />
-          </div>
-
-          {/* Cost calculator */}
-          {(() => {
-            const totalMi = route.total_distance_miles ?? (route.total_distance_km ? kmToMiles(route.total_distance_km) : null);
-            if (totalMi === null || orderedStops.length === 0) return null;
-            return (
-              <RouteCostCalculator
-                totalMiles={totalMi}
-                stopCount={orderedStops.length}
-                stops={orderedStops}
-                isEstimated={!route.total_distance_miles}
-                onAssumptionsChange={setAssumptions}
-              />
-            );
-          })()}
         </div>
 
-        {/* ── Sidebar ───────────────────────────────────────────────────────── */}
-        <div className="w-full lg:w-52 shrink-0 space-y-2 lg:sticky lg:top-24 self-start">
-          <Link href={`/routes/${route.id}/edit`} className="block">
-            <Button variant="outline" className="w-full gap-2">
-              <Pencil className="size-4" /> Edit Route
-            </Button>
-          </Link>
-
-          <button
-            onClick={() => window.open(`/routes/${route.id}/print`, "_blank")}
-            className="w-full flex items-center gap-2 h-9 px-4 rounded-lg border border-gray-200 text-sm text-gray-600 hover:bg-gray-50 transition-colors"
-          >
-            <Printer className="size-4" /> Print / PDF
-          </button>
-
-          <button
-            onClick={exportCsv}
-            className="w-full flex items-center gap-2 h-9 px-4 rounded-lg border border-gray-200 text-sm text-gray-600 hover:bg-gray-50 transition-colors"
-          >
-            <Download className="size-4" /> Export CSV
-          </button>
-
-          <div className="pt-2 border-t border-gray-100">
-            {showConfirm ? (
-              <div className="space-y-2">
-                <p className="text-xs text-gray-500 text-center">Delete this route?</p>
-                <div className="flex gap-2">
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    className="flex-1"
-                    onClick={() => setShowConfirm(false)}
-                  >
-                    Cancel
-                  </Button>
-                  <Button
-                    size="sm"
-                    className="flex-1 bg-rose-600 hover:bg-rose-700 text-white"
-                    onClick={deleteRoute}
-                    disabled={deleting}
-                  >
-                    Delete
-                  </Button>
-                </div>
-              </div>
-            ) : (
-              <button
-                onClick={() => setShowConfirm(true)}
-                className="w-full flex items-center gap-2 h-9 px-4 rounded-lg text-sm text-rose-500 hover:bg-rose-50 transition-colors"
-              >
-                <Trash2 className="size-4" /> Delete Route
-              </button>
-            )}
-          </div>
-
-          {/* Stats */}
-          {(route.total_distance_miles ?? route.total_distance_km) && (
-            <div className="rounded-lg border border-gray-200 bg-gray-50 p-3 mt-4 text-center">
-              <p className="text-xs text-gray-500 mb-0.5">
-                {route.total_distance_miles ? "Road Distance" : "Est. Distance"}
-              </p>
-              <p className="text-2xl font-bold text-[#2D6A4F]">
-                {(route.total_distance_miles ?? kmToMiles(route.total_distance_km!)).toFixed(1)}
-              </p>
-              <p className="text-xs text-gray-400">miles</p>
-            </div>
-          )}
-          <div className="rounded-lg border border-gray-200 bg-gray-50 p-3 text-center">
-            <p className="text-xs text-gray-500 mb-0.5">Stops</p>
-            <p className="text-2xl font-bold text-gray-900">{orderedStops.length}</p>
-          </div>
-
-          {/* Missing geocode warning */}
-          {route.stops.some((s) => !s.geocoded) && (
-            <div className="rounded-lg bg-amber-50 border border-amber-200 px-3 py-2 text-xs text-amber-700">
-              <MapPin className="size-3 inline mr-1" />
-              {route.stops.filter((s) => !s.geocoded).length} stop(s) not geocoded — map may be incomplete.
-            </div>
-          )}
-        </div>
       </div>
     </div>
   );

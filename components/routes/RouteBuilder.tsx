@@ -923,11 +923,14 @@ export function RouteBuilder({ userId: _userId, existingRoute }: Props) {
           />
         </div>
 
-        {/* Cost calculator — shown whenever we have a distance + at least one stop */}
+        {/* Cost calculator — shown whenever we have a distance + at least one stop.
+            Priority: fresh road estimate > optimized road distance > stale/haversine saved value */}
         {(() => {
-          const costMiles = totalDistanceMiles ?? currentRouteMiles ?? null;
+          const costMiles = (estimateIsRoad && currentRouteMiles !== null)
+            ? currentRouteMiles
+            : (totalDistanceMiles ?? currentRouteMiles ?? null);
           if (costMiles === null || stops.length === 0) return null;
-          const costIsEstimated = totalDistanceMiles === null || (!roadGeojson && !estimateIsRoad);
+          const costIsEstimated = !(estimateIsRoad || roadGeojson);
           return (
             <RouteCostCalculator
               totalMiles={costMiles}
