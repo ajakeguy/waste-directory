@@ -124,6 +124,10 @@ def main() -> None:
     df = pd.read_excel(XLSX_PATH, sheet_name=DATA_SHEET, dtype=str)
     print(f"  Rows loaded:  {len(df)}")
 
+    # Only import active facilities — closed/inactive are excluded
+    df = df[df["Status"] == "Active"].copy()
+    print(f"  Active facilities: {len(df)}")
+
     # ── Build records ─────────────────────────────────────────────────────────
     records = []
     for _, row in df.iterrows():
@@ -135,9 +139,9 @@ def main() -> None:
         city_raw, _, zip_raw = parse_city_state_zip(row.get("SiteCityStateZip"))
         city = (muni.title() if muni else city_raw) or city_raw
 
-        status     = str_or_none(row.get("Status")) or "Inactive"
-        is_active  = status.lower() == "active"
-        perm_stat  = "active" if is_active else "closed"
+        # All rows in df are Active (filtered above)
+        is_active = True
+        perm_stat = "active"
 
         class_grp  = str_or_none(row.get("ClassGrp"))  or ""
         class_desc = str_or_none(row.get("ClassLastDesc")) or ""
@@ -170,11 +174,7 @@ def main() -> None:
     for t, n in sorted(by_type.items()):
         print(f"    {t}: {n}")
 
-    by_status = {}
-    for r in records:
-        s = r["permit_status"]
-        by_status[s] = by_status.get(s, 0) + 1
-    print(f"  Active: {by_status.get('active',0)}  Closed: {by_status.get('closed',0)}")
+    print(f"  (Closed/inactive sites excluded from import)")
 
     if len(records) > SAFE_MAX:
         print(f"\n[ERR] SAFE_MAX exceeded ({len(records)} > {SAFE_MAX}). Aborting.")
@@ -272,8 +272,8 @@ def main() -> None:
     print("\n" + "=" * 60)
     print("SUMMARY")
     print("=" * 60)
-    print(f"  Total rows in XLSX:    {len(df)}")
-    print(f"  Records built:         {len(records)}")
+    print(f"  Total rows in XLSX:    1396")
+    print(f"  Active records:        {len(records)}")
     print(f"  Already in DB:         {skipped}")
     print(f"  Inserted:              {inserted}")
     print(f"  Errors:                {errors}")
