@@ -1,0 +1,32 @@
+name: CT Disposal Facilities Sync
+
+on:
+  # Monthly on the 20th at 3am UTC
+  schedule:
+    - cron: "0 3 20 * *"
+  # Allow manual runs from the GitHub Actions UI
+  workflow_dispatch:
+
+jobs:
+  import-ct-disposal:
+    name: Import CT DEEP disposal facilities
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Python dependencies
+        run: pip install requests supabase
+
+      - name: Run CT DEEP disposal facilities importer
+        run: python pipelines/ct-disposal-import/index.py
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}

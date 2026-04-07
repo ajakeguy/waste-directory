@@ -1,0 +1,32 @@
+name: MA Disposal Facilities Sync
+
+# Manual trigger only — the XLSX is downloaded periodically and committed to the repo.
+# To update: download the latest file from MassDEP, replace the XLSX in
+# pipelines/ma-disposal-import/data/ma_solid_waste_facilities.xlsx, commit, then run this workflow.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  import-ma-disposal:
+    name: Import MA DEP solid waste facilities
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Python dependencies
+        run: pip install pandas openpyxl supabase
+
+      - name: Run MA disposal facilities importer
+        run: python pipelines/ma-disposal-import/index.py
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}

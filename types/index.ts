@@ -235,3 +235,78 @@ export type DiversionReport = {
   created_at: string
   updated_at: string
 }
+
+// ── Disposal Facilities ────────────────────────────────────────────────────────
+
+export type FacilityType =
+  | "landfill"
+  | "transfer_station"
+  | "mrf"
+  | "composting"
+  | "anaerobic_digestion"
+  | "waste_to_energy"
+  | "recycling_center"
+  | "hazardous_waste"
+  | "cd_facility"
+
+export const FACILITY_TYPE_LABELS: Record<FacilityType, string> = {
+  landfill:            "Landfill",
+  transfer_station:    "Transfer Station",
+  mrf:                 "MRF / Recycling Center",
+  composting:          "Composting",
+  anaerobic_digestion: "Anaerobic Digestion",
+  waste_to_energy:     "Waste-to-Energy",
+  recycling_center:    "Recycling Center",
+  hazardous_waste:     "Hazardous Waste",
+  cd_facility:         "C&D Facility",
+}
+
+export const FACILITY_TYPES = Object.keys(FACILITY_TYPE_LABELS) as FacilityType[]
+
+/** Tailwind badge color classes per facility type. */
+export const FACILITY_TYPE_COLORS: Record<FacilityType, string> = {
+  landfill:            "bg-gray-100 text-gray-700",
+  transfer_station:    "bg-blue-100 text-blue-700",
+  mrf:                 "bg-purple-100 text-purple-700",
+  composting:          "bg-green-100 text-green-700",
+  anaerobic_digestion: "bg-teal-100 text-teal-700",
+  waste_to_energy:     "bg-orange-100 text-orange-700",
+  recycling_center:    "bg-purple-100 text-purple-700",
+  hazardous_waste:     "bg-red-100 text-red-700",
+  cd_facility:         "bg-yellow-100 text-yellow-700",
+}
+
+export type DisposalFacility = {
+  id: string
+  name: string
+  slug: string
+  facility_type: string
+  address: string | null
+  city: string | null
+  state: string | null
+  zip: string | null
+  lat: number | null
+  lng: number | null
+  phone: string | null
+  email: string | null
+  website: string | null
+  operator_name: string | null
+  permit_number: string | null
+  permit_status: string | null
+  permitted_capacity_tons_per_day: number | null
+  accepts_msw: boolean
+  accepts_recycling: boolean
+  accepts_cd: boolean
+  accepts_organics: boolean
+  accepts_hazardous: boolean
+  accepts_special_waste: boolean
+  tipping_fee_per_ton: number | null
+  hours_of_operation: string | null
+  data_source: string | null
+  service_area_states: string[] | null
+  notes: string | null
+  verified: boolean
+  active: boolean
+  created_at: string
+  updated_at: string
+}
