@@ -268,9 +268,7 @@ const LICENSE_METADATA_LABELS: Record<string, string> = {
   vt_waste_type_raw:          "Waste Type (VT)",
   // New Hampshire DES
   nh_date_registered:         "Registered Since",
-  nh_contact_name:            "Contact",
-  nh_contact_email:           "Email",
-  nh_website:                 "Website",
+  // nh_contact_name / nh_contact_email / nh_website → surfaced in Contact Information
   // NYC BIC
   bic_number:                 "BIC License Number",
   boro:                       "Borough",
@@ -323,6 +321,29 @@ async function HaulerProfilePage({ segment }: { segment: string }) {
 
   const orgContacts = await getOrganizationContacts(org.id);
 
+  // ── Surface contact/website fields stored in license_metadata ────────────────
+  // Any key ending in _website, _contact_name, or _contact_email from ANY state
+  // is shown in Contact Information rather than the License section.
+  const meta = org.license_metadata ?? {};
+  const metaWebsite     = Object.entries(meta).find(([k]) => k.endsWith("_website"))?.[1]      ?? null;
+  const metaContactName = Object.entries(meta).find(([k]) => k.endsWith("_contact_name"))?.[1] ?? null;
+  const metaContactEmail= Object.entries(meta).find(([k]) => k.endsWith("_contact_email"))?.[1]?? null;
+
+  // Priority: org column → license_metadata fallback
+  const displayWebsite      = org.website      || metaWebsite      || null;
+  const displayContactEmail = org.email        || metaContactEmail  || null;
+
+  // Normalise URL: prepend https:// if the stored value has no scheme
+  const websiteHref = displayWebsite
+    ? (displayWebsite.startsWith("http") ? displayWebsite : `https://${displayWebsite}`)
+    : null;
+  const websiteLabel = displayWebsite ? displayWebsite.replace(/^https?:\/\//, "") : null;
+
+  // Keys to suppress in the License section (surfaced in Contact Information instead)
+  const CONTACT_META_SUFFIXES = ["_website", "_contact_name", "_contact_email"];
+  const isContactMeta = (key: string) =>
+    CONTACT_META_SUFFIXES.some((suffix) => key.endsWith(suffix));
+
   const correctionSubject = encodeURIComponent(
     `Correction suggestion: ${org.name}`
   );
@@ -369,7 +390,7 @@ async function HaulerProfilePage({ segment }: { segment: string }) {
         <h2 className="font-semibold text-gray-900 mb-4">
           Contact Information
         </h2>
-        {!org.phone && !org.email && !org.website ? (
+        {!org.phone && !displayContactEmail && !displayWebsite && !metaContactName ? (
           <p className="text-sm text-gray-400">
             No contact information on file.
           </p>
@@ -386,27 +407,36 @@ async function HaulerProfilePage({ segment }: { segment: string }) {
                 </a>
               </div>
             )}
-            {org.email && (
+            {/* Contact name from license_metadata (e.g. nh_contact_name) */}
+            {metaContactName && (
+              <div className="flex items-center gap-3 text-sm">
+                <UserCircle className="size-4 text-gray-400 shrink-0" />
+                <span className="text-gray-700">{metaContactName}</span>
+              </div>
+            )}
+            {/* Email: org column first, then license_metadata fallback */}
+            {displayContactEmail && (
               <div className="flex items-center gap-3 text-sm">
                 <Mail className="size-4 text-gray-400 shrink-0" />
                 <a
-                  href={`mailto:${org.email}`}
+                  href={`mailto:${displayContactEmail}`}
                   className="text-gray-700 hover:text-[#2D6A4F] transition-colors"
                 >
-                  {org.email}
+                  {displayContactEmail}
                 </a>
               </div>
             )}
-            {org.website && (
+            {/* Website: org column first, then license_metadata fallback */}
+            {websiteHref && websiteLabel && (
               <div className="flex items-center gap-3 text-sm">
                 <Globe className="size-4 text-gray-400 shrink-0" />
                 <a
-                  href={org.website}
+                  href={websiteHref}
                   target="_blank"
                   rel="noopener noreferrer"
                   className="text-gray-700 hover:text-[#2D6A4F] transition-colors"
                 >
-                  {org.website.replace(/^https?:\/\//, "")}
+                  {websiteLabel}
                 </a>
               </div>
             )}
@@ -445,28 +475,28 @@ async function HaulerProfilePage({ segment }: { segment: string }) {
         </section>
       )}
 
-      {/* License & Authorization Details — shown whenever column exists */}
-      {org.license_metadata !== null && org.license_metadata !== undefined && (
+      {/* License & Authorization Details — shown only when non-contact license keys exist */}
+      {org.license_metadata !== null &&
+        org.license_metadata !== undefined &&
+        Object.entries(org.license_metadata).some(([k, v]) => v && !isContactMeta(k)) && (
         <section className="bg-white rounded-xl border border-gray-200 p-5 mb-4">
           <h2 className="font-semibold text-gray-900 mb-3">
             License &amp; Authorization Details
           </h2>
-          {Object.keys(org.license_metadata).length === 0 ? (
-            <p className="text-sm text-gray-400">No license details on file.</p>
-          ) : (
-            <dl className="space-y-2">
-              {Object.entries(org.license_metadata).map(([key, value]) => {
-                if (!value) return null;
-                const label = LICENSE_METADATA_LABELS[key] ?? formatMetadataKey(key);
-                return (
-                  <div key={key} className="flex gap-3 text-sm">
-                    <dt className="text-gray-500 shrink-0 min-w-[140px]">{label}</dt>
-                    <dd className="text-gray-900 font-medium">{value}</dd>
-                  </div>
-                );
-              })}
-            </dl>
-          )}
+          <dl className="space-y-2">
+            {Object.entries(org.license_metadata).map(([key, value]) => {
+              // Skip blank values and contact-type fields (shown in Contact Information)
+              if (!value) return null;
+              if (isContactMeta(key)) return null;
+              const label = LICENSE_METADATA_LABELS[key] ?? formatMetadataKey(key);
+              return (
+                <div key={key} className="flex gap-3 text-sm">
+                  <dt className="text-gray-500 shrink-0 min-w-[140px]">{label}</dt>
+                  <dd className="text-gray-900 font-medium">{value}</dd>
+                </div>
+              );
+            })}
+          </dl>
         </section>
       )}
 
