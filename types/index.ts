@@ -33,37 +33,41 @@ export type ServiceType =
   | "recycling"
   | "composting"
   | "hazmat"
+  | "hazardous_waste"
   | "e_waste"
   | "medical"
   | "septage"
 
 export const SERVICE_TYPE_LABELS: Record<ServiceType, string> = {
-  residential: "Residential Pickup",
-  commercial: "Commercial Pickup",
-  roll_off: "Roll-Off / C&D",
-  industrial: "Industrial Waste",
-  recycling: "Recycling Services",
-  composting: "Composting",
-  hazmat: "Hazardous Waste",
-  e_waste: "E-Waste / Electronics",
-  medical: "Medical Waste",
-  septage: "Septage / Pumping",
+  residential:      "Residential Pickup",
+  commercial:       "Commercial Pickup",
+  roll_off:         "Roll-Off / C&D",
+  industrial:       "Industrial Waste",
+  recycling:        "Recycling Services",
+  composting:       "Composting",
+  hazmat:           "Hazardous Waste",
+  hazardous_waste:  "Hazardous Waste Transport",
+  e_waste:          "E-Waste / Electronics",
+  medical:          "Medical Waste",
+  septage:          "Septage / Pumping",
 }
 
 export const SERVICE_TYPES = Object.keys(SERVICE_TYPE_LABELS) as ServiceType[]
 
 export const STATE_SLUG_TO_CODE: Record<string, string> = {
-  maine: "ME",
-  massachusetts: "MA",
-  "new-hampshire": "NH",
-  "new-jersey": "NJ",
-  "new-york": "NY",
-  pennsylvania: "PA",
-  "rhode-island": "RI",
-  vermont: "VT",
+  connecticut:      "CT",
+  maine:            "ME",
+  massachusetts:    "MA",
+  "new-hampshire":  "NH",
+  "new-jersey":     "NJ",
+  "new-york":       "NY",
+  pennsylvania:     "PA",
+  "rhode-island":   "RI",
+  vermont:          "VT",
 }
 
 export const STATE_CODE_TO_SLUG: Record<string, string> = {
+  CT: "connecticut",
   ME: "maine",
   MA: "massachusetts",
   NH: "new-hampshire",
@@ -75,14 +79,15 @@ export const STATE_CODE_TO_SLUG: Record<string, string> = {
 }
 
 export const STATE_SLUG_TO_NAME: Record<string, string> = {
-  maine: "Maine",
-  massachusetts: "Massachusetts",
-  "new-hampshire": "New Hampshire",
-  "new-jersey": "New Jersey",
-  "new-york": "New York",
-  pennsylvania: "Pennsylvania",
-  "rhode-island": "Rhode Island",
-  vermont: "Vermont",
+  connecticut:      "Connecticut",
+  maine:            "Maine",
+  massachusetts:    "Massachusetts",
+  "new-hampshire":  "New Hampshire",
+  "new-jersey":     "New Jersey",
+  "new-york":       "New York",
+  pennsylvania:     "Pennsylvania",
+  "rhode-island":   "Rhode Island",
+  vermont:          "Vermont",
 }
 
 export const VALID_STATE_SLUGS = Object.keys(STATE_SLUG_TO_CODE)

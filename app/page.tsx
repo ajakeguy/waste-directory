@@ -5,6 +5,13 @@ import { ArticleCard } from "@/components/news/ArticleCard";
 
 const states = [
   {
+    name: "Connecticut",
+    slug: "connecticut",
+    abbr: "CT",
+    description: "Serving the Constitution State",
+    comingSoon: true,
+  },
+  {
     name: "Maine",
     slug: "maine",
     abbr: "ME",
@@ -96,7 +103,7 @@ export default async function HomePage() {
             Browse by State
           </h2>
           <p className="text-gray-500 text-center mb-10">
-            Find licensed waste haulers serving Maine, Massachusetts, New Hampshire, New Jersey, New York, Pennsylvania, Rhode Island, and Vermont
+            Find licensed waste haulers serving Connecticut, Maine, Massachusetts, New Hampshire, New Jersey, New York, Pennsylvania, Rhode Island, and Vermont
           </p>
 
           <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-4 gap-6">
@@ -104,10 +111,18 @@ export default async function HomePage() {
               <Link
                 key={state.slug}
                 href={`/haulers/${state.slug}`}
-                className="group bg-white rounded-xl border border-gray-200 p-6 flex flex-col items-center text-center hover:border-[#2D6A4F] hover:shadow-md transition-all"
+                className={`group bg-white rounded-xl border border-gray-200 p-6 flex flex-col items-center text-center transition-all ${
+                  state.comingSoon
+                    ? "opacity-75 hover:opacity-90"
+                    : "hover:border-[#2D6A4F] hover:shadow-md"
+                }`}
               >
-                <div className="w-14 h-14 rounded-full bg-[#2D6A4F]/10 flex items-center justify-center mb-4 group-hover:bg-[#2D6A4F]/20 transition-colors">
-                  <MapPin className="size-6 text-[#2D6A4F]" />
+                <div className={`w-14 h-14 rounded-full flex items-center justify-center mb-4 transition-colors ${
+                  state.comingSoon
+                    ? "bg-gray-100"
+                    : "bg-[#2D6A4F]/10 group-hover:bg-[#2D6A4F]/20"
+                }`}>
+                  <MapPin className={`size-6 ${state.comingSoon ? "text-gray-400" : "text-[#2D6A4F]"}`} />
                 </div>
                 <span className="text-xs font-bold tracking-widest uppercase text-[#94A3B8] mb-1">
                   {state.abbr}
@@ -116,9 +131,15 @@ export default async function HomePage() {
                   {state.name}
                 </h3>
                 <p className="text-sm text-gray-500">{state.description}</p>
-                <span className="mt-4 text-sm font-medium text-[#2D6A4F] group-hover:underline">
-                  View haulers →
-                </span>
+                {state.comingSoon ? (
+                  <span className="mt-4 text-xs font-medium text-gray-400 bg-gray-100 px-2.5 py-1 rounded-full">
+                    Data coming soon
+                  </span>
+                ) : (
+                  <span className="mt-4 text-sm font-medium text-[#2D6A4F] group-hover:underline">
+                    View haulers →
+                  </span>
+                )}
               </Link>
             ))}
           </div>

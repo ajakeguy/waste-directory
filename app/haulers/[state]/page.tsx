@@ -108,6 +108,13 @@ type StateInfo = {
 };
 
 const STATE_INFO: Record<string, StateInfo> = {
+  connecticut: {
+    source: "Connecticut Department of Energy and Environmental Protection (DEEP) and municipal hauler permit registrations",
+    govBody: "CT DEEP, Waste Engineering and Enforcement Division",
+    requirements:
+      "Connecticut solid waste haulers must obtain permits from individual municipalities. CT DEEP regulates solid waste facilities under CGS Section 22a-208 et seq. Haulers transporting C&D debris or special waste must also comply with CT DEEP permit requirements. The state operates under a Solid Waste Management Plan requiring increasing diversion from disposal.",
+    lastUpdated: "Data sourced from municipal permit registrations — coverage expanding",
+  },
   maine: {
     source: "Maine DEP Non-Hazardous Waste Transporter List",
     govBody: "Maine Department of Environmental Protection (ME DEP)",
@@ -362,6 +369,10 @@ const LICENSE_METADATA_LABELS: Record<string, string> = {
   vt_permit_type:             "Permit Type (VT)",
   vt_permit_number:           "Permit Number (VT)",
   vt_waste_type_raw:          "Waste Type (VT)",
+  // Massachusetts DEP Hazardous Waste
+  ma_hw_license:              "HW License #",
+  ma_hw_expiration:           "License Expiry",
+  ma_hw_epa_number:           "EPA ID Number",
   // New Hampshire DES
   nh_date_registered:         "Registered Since",
   // nh_contact_name / nh_contact_email / nh_website → surfaced in Contact Information

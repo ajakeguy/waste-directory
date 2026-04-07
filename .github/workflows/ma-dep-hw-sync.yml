@@ -1,0 +1,32 @@
+name: MA DEP Hazardous Waste Transporter Sync
+
+on:
+  # Monthly on the 10th at 2am UTC
+  schedule:
+    - cron: "0 2 10 * *"
+  # Allow manual runs from the GitHub Actions UI
+  workflow_dispatch:
+
+jobs:
+  import-ma-dep-hw:
+    name: Import MA DEP licensed hazardous waste transporters
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Python dependencies
+        run: pip install requests pdfplumber supabase
+
+      - name: Run MA DEP hazardous waste transporter importer
+        run: python pipelines/ma-dep-hw-import/index.py
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
