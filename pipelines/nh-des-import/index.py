@@ -249,9 +249,9 @@ def main() -> None:
         try:
             supabase.table("organizations").insert(batch).execute()
             inserted += len(batch)
-            print(f"  ✓ Batch {batch_num}: inserted {len(batch)} records")
+            print(f"  [OK] Batch {batch_num}: inserted {len(batch)} records")
         except Exception as exc:
-            print(f"  ✗ Batch {batch_num} failed: {exc}")
+            print(f"  [ERR] Batch {batch_num} failed: {exc}")
             errors += 1
 
     # ── Summary ───────────────────────────────────────────────────────────────
