@@ -4,8 +4,14 @@ pipelines/ma-dep-hw-import/index.py
 
 Imports MassDEP Licensed Hazardous Waste Transporter records.
 
-Source PDF (updated periodically):
+Source PDF (updated periodically, must be placed manually):
+  pipelines/ma-dep-hw-import/data/ma_hw_transporters.pdf
+
+  Download from:
   https://www.mass.gov/doc/massdep-licensed-hazardous-waste-transporter-list-0/download
+
+  mass.gov blocks automated downloads (403). Download manually in a browser
+  and save as: pipelines/ma-dep-hw-import/data/ma_hw_transporters.pdf
 
 PDF text format — each record starts with a license number:
   HW05-MA-XXXX  COMPANY NAME  MM/DD/YYYY  (NNN) NNN-NNNN  ADDRESS  CITY  ST  ZIP  EPA#
@@ -22,25 +28,17 @@ import os
 import re
 import sys
 from datetime import datetime, date
+from pathlib import Path
 
 import pdfplumber
-import requests
 from supabase import create_client, Client
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
-PDF_URL     = "https://www.mass.gov/doc/massdep-licensed-hazardous-waste-transporter-list-0/download"
+PDF_PATH    = Path(__file__).parent / "data" / "ma_hw_transporters.pdf"
 DATA_SOURCE = "ma_dep_hazardous_waste_2025"
 SAFE_MAX    = 300
 BATCH_SIZE  = 50
-
-HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (compatible; WasteDirectory-DataImport/1.0; "
-        "+https://wastedirectory.com)"
-    ),
-    "Accept": "application/pdf,*/*",
-}
 
 # License number pattern: HW05-MA-NNNN
 LICENSE_RE = re.compile(r"HW05-MA-\d+")
@@ -118,37 +116,34 @@ def is_active(expiry: date | None) -> bool:
     return expiry.year >= 2024
 
 
-# ── Download PDF ──────────────────────────────────────────────────────────────
+# ── Read PDF from disk ────────────────────────────────────────────────────────
 
-def download_pdf() -> bytes | None:
-    print(f"\n  Downloading PDF from MassDEP...")
-    print(f"  URL: {PDF_URL}")
-    try:
-        resp = requests.get(PDF_URL, headers=HEADERS, timeout=60, allow_redirects=True)
-        ct = resp.headers.get("Content-Type", "")
-        print(f"  Status: {resp.status_code}  Content-Type: {ct}  Size: {len(resp.content):,} bytes")
-        if resp.status_code == 200 and len(resp.content) > 1000:
-            return resp.content
-        print(f"  [ERR] Unexpected response")
-        return None
-    except Exception as exc:
-        print(f"  [ERR] Download failed: {exc}")
-        return None
+def load_pdf() -> bytes:
+    if not PDF_PATH.exists():
+        print(f"[ERR] PDF not found at {PDF_PATH}")
+        print("  Download it manually from a browser and save it to that path:")
+        print("  https://www.mass.gov/doc/massdep-licensed-hazardous-waste-transporter-list-0/download")
+        sys.exit(1)
+
+    print(f"  Reading PDF from disk: {PDF_PATH}")
+    with open(PDF_PATH, "rb") as f:
+        pdf_bytes = f.read()
+    print(f"  File size: {len(pdf_bytes):,} bytes")
+    return pdf_bytes
 
 
 # ── Extract text from PDF ─────────────────────────────────────────────────────
 
 def extract_text(pdf_bytes: bytes) -> str:
     """Extract all text from all pages, joined with newlines."""
-    lines: list[str] = []
     with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
         print(f"  PDF pages: {len(pdf.pages)}")
-        for page in pdf.pages:
-            text = page.extract_text(layout=True) or page.extract_text() or ""
-            lines.extend(text.splitlines())
-    full = "\n".join(lines)
-    print(f"  Total text characters: {len(full):,}")
-    return full
+        full_text = "\n".join(
+            page.extract_text() or ""
+            for page in pdf.pages
+        )
+    print(f"  Total text characters: {len(full_text):,}")
+    return full_text
 
 
 # ── Parse records ─────────────────────────────────────────────────────────────
@@ -267,12 +262,8 @@ def main() -> None:
     print(f"Run date: {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}")
     print("=" * 60)
 
-    # ── Download & extract ────────────────────────────────────────────────────
-    pdf_bytes = download_pdf()
-    if not pdf_bytes:
-        print("\n[ERR] Could not download PDF. Aborting.", file=sys.stderr)
-        sys.exit(1)
-
+    # ── Load PDF from disk ────────────────────────────────────────────────────
+    pdf_bytes = load_pdf()
     full_text = extract_text(pdf_bytes)
     parsed    = parse_records(full_text)
 
@@ -385,12 +376,12 @@ def main() -> None:
     print("\n" + "=" * 60)
     print("SUMMARY")
     print("=" * 60)
-    print(f"  Records parsed:           {len(parsed)}")
-    print(f"  Active licenses:          {len(active_records)}")
+    print(f"  Records parsed:             {len(parsed)}")
+    print(f"  Active licenses:            {len(active_records)}")
     print(f"  Skipped (expired pre-2024): {skipped_expired}")
-    print(f"  Already in DB:            {already_in}")
-    print(f"  Inserted:                 {inserted}")
-    print(f"  Errors:                   {errors}")
+    print(f"  Already in DB:              {already_in}")
+    print(f"  Inserted:                   {inserted}")
+    print(f"  Errors:                     {errors}")
 
     if errors:
         sys.exit(1)

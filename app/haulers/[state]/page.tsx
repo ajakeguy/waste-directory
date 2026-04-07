@@ -123,11 +123,13 @@ const STATE_INFO: Record<string, StateInfo> = {
     lastUpdated: "Updated from ME DEP active transporter list (2026)",
   },
   massachusetts: {
-    source: "Massachusetts DEP Solid Waste Transporter Registrations",
+    source:
+      "MassDEP Licensed Hazardous Waste Transporters list (March 2025) and municipal solid waste hauler permit registrations (in progress)",
     govBody: "Massachusetts Department of Environmental Protection (MassDEP)",
     requirements:
-      "Solid waste transporters in Massachusetts must register with MassDEP under 310 CMR 19.000. Registration requires proof of vehicle insurance and compliance with state solid waste regulations. Haulers transporting septage must also comply with 314 CMR 5.00.",
-    lastUpdated: "Updated from MassDEP transporter registration data (2025–2026)",
+      "Massachusetts does not maintain a statewide solid waste hauler registration system — regulation is handled at the municipal level by each of the state's 351 cities and towns. This directory currently includes companies licensed by MassDEP to transport hazardous waste, many of which also provide general solid waste services. Municipal hauler permit data is being added progressively by city and town. All haulers must comply with MassDEP Waste Disposal Bans under 310 CMR 19.017.",
+    lastUpdated:
+      "MassDEP Hazardous Waste Transporter list updated monthly; municipal permit data added as available",
   },
   "new-hampshire": {
     source: "NH DES Registered Solid Waste Hauler List",
