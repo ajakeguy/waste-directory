@@ -175,6 +175,11 @@ def parse_features(features: list[dict], endpoint: dict) -> list[dict]:
         if not name:
             continue
 
+        # Strip trailing parenthetical permit codes from name, e.g. "(1030914-Po)"
+        name = re.sub(r"\s*\(\d+[\w-]*\)\s*$", "", name).strip()
+        if not name:
+            continue
+
         active  = is_active_status(attrs.get(active_field) if active_field else None, active_field)
         lat     = geom.get("y")
         lng     = geom.get("x")
@@ -182,13 +187,19 @@ def parse_features(features: list[dict], endpoint: dict) -> list[dict]:
         phone   = clean_phone(attrs.get(phone_field))
         state   = normalize_state(attrs.get(state_field))
 
+        # Zero-pad ZIP codes (ArcGIS returns CT ZIPs as integers, dropping leading 0)
+        zip_raw = str(attrs.get("Zip_Code") or "").strip()
+        if zip_raw and zip_raw.isdigit() and len(zip_raw) < 5:
+            zip_raw = zip_raw.zfill(5)
+        zip_val = zip_raw if zip_raw and zip_raw not in {"nan", "none", "null"} else None
+
         records.append({
             "name":          name.title(),
             "facility_type": fac_type,
             "address":       str_or_none(attrs.get("Street")),
             "city":          city.title() if city else None,
             "state":         state,
-            "zip":           str_or_none(attrs.get("Zip_Code")),
+            "zip":           zip_val,
             "phone":         phone,
             "permit_number": permit_number,
             "permit_status": "active" if active else "inactive",
