@@ -108,6 +108,21 @@ def clean_phone(raw) -> str | None:
     return str_or_none(raw)
 
 
+def clean_facility_name(raw: str) -> str:
+    """Remove permit codes, parenthetical annotations, and extra whitespace from a facility name."""
+    name = raw.strip()
+    # Remove permit codes with optional closing paren: "(1030914-Po" or "(13101334-Pco)"
+    name = re.sub(r"\s*\(\d+[\w-]*\)?\s*$", "", name)
+    # Remove slash-prefixed permit codes: "/14801299-Pco"
+    name = re.sub(r"\s*/\d+[\w-]*\s*$", "", name)
+    # Remove long parenthetical annotations (notes, not permit codes):
+    # e.g. "(No Registra In Sims)", "(Phase 2 Permit Levels)", "(This Is Listed As...)"
+    name = re.sub(r"\s*\([^)]{10,}\)\s*$", "", name)
+    # Collapse multiple spaces
+    name = re.sub(r"\s{2,}", " ", name)
+    return name.strip()
+
+
 def parse_name_permit(raw: str | None) -> tuple[str, str | None]:
     """Split 'Company Name / PERMIT-NUMBER' into (name, permit_number)."""
     if not raw:
@@ -175,8 +190,8 @@ def parse_features(features: list[dict], endpoint: dict) -> list[dict]:
         if not name:
             continue
 
-        # Strip trailing parenthetical permit codes from name, e.g. "(1030914-Po)"
-        name = re.sub(r"\s*\(\d+[\w-]*\)\s*$", "", name).strip()
+        # Clean permit codes, annotations, and extra spaces from name
+        name = clean_facility_name(name)
         if not name:
             continue
 
