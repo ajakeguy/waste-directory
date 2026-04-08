@@ -1,12 +1,13 @@
 /**
  * lib/road-routing.ts
  *
- * Fetches a real road route from ORS Directions API (driving-hgv profile).
- * Handles chunking for routes > 48 intermediate stops.
+ * Client-side helpers that call our own Next.js API proxy routes:
+ *   POST /api/ors/matrix      → ORS Matrix API  (distance numbers only, fast)
+ *   POST /api/ors/directions  → ORS Directions API (road geometry + distance)
+ *
+ * Proxying through Next.js avoids browser CSP / CORS blocks on direct
+ * calls to api.openrouteservice.org. The ORS API key lives server-side only.
  */
-
-const ORS_DIRECTIONS =
-  "https://api.openrouteservice.org/v2/directions/driving-hgv/geojson";
 
 export type LatLng = { lat: number; lng: number };
 
@@ -17,26 +18,156 @@ export type RoadRouteResult = {
   distanceMiles: number;
 };
 
+// ── Directions proxy (chunked, profile fallback) ──────────────────────────────
+
+const PROFILES = ["driving-hgv", "driving-car"] as const;
+const DIRECTIONS_TIMEOUT_MS = 35_000;
+
+async function tryFetchChunk(
+  coordinates: [number, number][],
+  profile: string
+): Promise<{ coords: [number, number][]; meters: number } | null> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), DIRECTIONS_TIMEOUT_MS);
+
+  try {
+    const res = await fetch("/api/ors/directions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ profile, coordinates, instructions: false }),
+      signal: controller.signal,
+    });
+    clearTimeout(timeout);
+
+    // 503/504 → profile unavailable, signal caller to try next profile
+    if (res.status === 503 || res.status === 504) {
+      console.warn(`[road-routing] ${profile} returned ${res.status} — trying next profile`);
+      return null;
+    }
+
+    if (!res.ok) {
+      const body = await res.text().catch(() => "");
+      console.error(`[road-routing] ${profile} HTTP ${res.status}: ${body.slice(0, 200)}`);
+      return null;
+    }
+
+    const json = await res.json() as {
+      features?: Array<{
+        geometry: { coordinates: [number, number][] };
+        properties: { summary: { distance: number } };
+      }>;
+    };
+
+    const feature = json.features?.[0];
+    if (!feature) {
+      console.error(`[road-routing] ${profile} — no features in response`);
+      return null;
+    }
+
+    return {
+      coords: feature.geometry.coordinates,
+      meters: feature.properties.summary.distance,
+    };
+
+  } catch (err) {
+    clearTimeout(timeout);
+    if (err instanceof Error && err.name === "AbortError") {
+      console.warn(`[road-routing] ${profile} timed out after ${DIRECTIONS_TIMEOUT_MS}ms`);
+    } else {
+      console.error(`[road-routing] ${profile} fetch error:`, err);
+    }
+    return null;
+  }
+}
+
 /**
- * Fetch the road geometry from start → ordered stops → end.
- * If more than 48 intermediate stops, splits into chunks of 48 and stitches.
+ * Fetch road distance only (no geometry) using the ORS Matrix API (via proxy).
+ * For routes with ≤ 56 intermediate stops (≤ 58 total points), the Matrix API
+ * handles it in a single fast call (~2–5s vs 30s+ for Directions).
+ * Larger routes fall back to the chunked Directions API.
+ *
+ * Returns total road distance in miles, or null on failure.
+ */
+export async function fetchRoadDistanceMatrix(
+  start: LatLng,
+  orderedStops: LatLng[],
+  end: LatLng
+): Promise<number | null> {
+  const allPoints: LatLng[] = [start, ...orderedStops, end];
+  const n = allPoints.length;
+
+  console.log("[matrix] starting for", n, "points");
+
+  // Matrix free-tier limit: 3,500 (origins × destinations). 58×58 = 3,364 ≤ limit.
+  if (n > 58) {
+    console.log(`[matrix] route too large (${n} points), falling back to Directions`);
+    const result = await fetchRoadRoute(start, orderedStops, end);
+    return result?.distanceMiles ?? null;
+  }
+
+  const locations = allPoints.map((p) => [p.lng, p.lat]);
+  console.log("[matrix] calling /api/ors/matrix with", n, "points");
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 20_000);
+
+  try {
+    const res = await fetch("/api/ors/matrix", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ locations, metrics: ["distance"], units: "mi" }),
+      signal: controller.signal,
+    });
+    clearTimeout(timeout);
+
+    if (!res.ok) {
+      const body = await res.text().catch(() => "");
+      console.warn(`[matrix] HTTP ${res.status}: ${body.slice(0, 200)}`);
+      return null;
+    }
+
+    const json = await res.json() as { distances?: number[][] };
+    const distances = json.distances;
+    if (!distances || distances.length < 2) {
+      console.warn("[matrix] unexpected response shape:", JSON.stringify(json).slice(0, 200));
+      return null;
+    }
+
+    // Sum the super-diagonal: distances[0][1] + distances[1][2] + … + distances[N-2][N-1]
+    let totalMiles = 0;
+    for (let i = 0; i < distances.length - 1; i++) {
+      totalMiles += distances[i][i + 1];
+    }
+
+    console.log(`[matrix] success: ${totalMiles.toFixed(2)} mi (${n} points)`);
+    return totalMiles;
+
+  } catch (err) {
+    clearTimeout(timeout);
+    if (err instanceof Error && err.name === "AbortError") {
+      console.warn("[matrix] timed out after 20s");
+    } else {
+      console.warn("[matrix] fetch error:", err);
+    }
+    return null;
+  }
+}
+
+/**
+ * Fetch the road geometry from start → ordered stops → end (via proxy).
+ * Chunks requests at 15 waypoints for reliability on the ORS free tier.
+ * Tries driving-hgv first, falls back to driving-car on 503/504.
  */
 export async function fetchRoadRoute(
   start: LatLng,
   orderedStops: LatLng[],
   end: LatLng
 ): Promise<RoadRouteResult | null> {
-  const key = process.env.NEXT_PUBLIC_ORS_API_KEY;
-  if (!key) {
-    console.warn("[road-routing] NEXT_PUBLIC_ORS_API_KEY not set");
-    return null;
-  }
-
   // Build full waypoint list: start, ...stops, end
   const allWaypoints: LatLng[] = [start, ...orderedStops, end];
 
-  // ORS allows max 50 waypoints per request — chunk at 50 with 1-pt overlap
-  const CHUNK_SIZE = 50;
+  // ORS allows max 50 waypoints per request — use 15 for reliability on free tier
+  const CHUNK_SIZE = 15;
   const chunks: LatLng[][] = [];
 
   if (allWaypoints.length <= CHUNK_SIZE) {
@@ -51,55 +182,43 @@ export async function fetchRoadRoute(
 
   const allCoords: [number, number][] = [];
   let totalDistanceMeters = 0;
+  let usedProfile: string | null = null;
 
   for (let ci = 0; ci < chunks.length; ci++) {
-    const chunk = chunks[ci];
-    const coordinates = chunk.map((p) => [p.lng, p.lat] as [number, number]);
+    const coordinates = chunks[ci].map((p) => [p.lng, p.lat] as [number, number]);
 
-    try {
-      const res = await fetch(ORS_DIRECTIONS, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: key,
-        },
-        body: JSON.stringify({ coordinates, instructions: false }),
-      });
+    let chunkResult: { coords: [number, number][]; meters: number } | null = null;
+    let succeededProfile: string | null = null;
 
-      if (!res.ok) {
-        const body = await res.text().catch(() => "");
-        console.error(`[road-routing] chunk ${ci} returned HTTP ${res.status}: ${body.slice(0, 200)}`);
-        return null;
+    for (const profile of PROFILES) {
+      console.log(`[road-routing] chunk ${ci + 1}/${chunks.length} - ${profile}`);
+      chunkResult = await tryFetchChunk(coordinates, profile);
+      if (chunkResult) {
+        succeededProfile = profile;
+        break;
       }
+    }
 
-      const json = await res.json() as {
-        features?: Array<{
-          geometry: { coordinates: [number, number][] };
-          properties: { summary: { distance: number } };
-        }>;
-      };
-
-      const feature = json.features?.[0];
-      if (!feature) {
-        console.error("[road-routing] no features in response for chunk", ci);
-        return null;
-      }
-
-      const coords = feature.geometry.coordinates;
-      // Avoid duplicating the joining point between chunks
-      const start = ci === 0 ? 0 : 1;
-      allCoords.push(...coords.slice(start));
-      totalDistanceMeters += feature.properties.summary.distance;
-
-    } catch (err) {
-      console.error("[road-routing] fetch error for chunk", ci, err);
+    if (!chunkResult) {
+      console.error(`[road-routing] all profiles failed for chunk ${ci} — giving up`);
       return null;
     }
+
+    if (ci === 0) {
+      usedProfile = succeededProfile;
+      if (succeededProfile !== PROFILES[0]) {
+        console.log(`[road-routing] using ${succeededProfile} (${PROFILES[0]} unavailable)`);
+      }
+    }
+
+    // Avoid duplicating the joining point between chunks
+    const sliceFrom = ci === 0 ? 0 : 1;
+    allCoords.push(...chunkResult.coords.slice(sliceFrom));
+    totalDistanceMeters += chunkResult.meters;
   }
 
   const METERS_PER_MILE = 1609.344;
-  return {
-    coordinates: allCoords,
-    distanceMiles: totalDistanceMeters / METERS_PER_MILE,
-  };
+  const distanceMiles = totalDistanceMeters / METERS_PER_MILE;
+  console.log(`[road-routing] success: ${distanceMiles.toFixed(2)} miles via ${usedProfile} (${chunks.length} chunk${chunks.length !== 1 ? "s" : ""})`);
+  return { coordinates: allCoords, distanceMiles };
 }

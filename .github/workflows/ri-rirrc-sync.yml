@@ -1,12 +1,15 @@
-name: NH DES Hauler Sync
+name: RI RIRRC Hauler Sync
 
 on:
-  # Manual runs only — the CSV is checked into the repo and updated by hand
+  # Monthly on the 15th at 3am UTC — PDF updates irregularly
+  schedule:
+    - cron: "0 3 15 * *"
+  # Allow manual runs from the GitHub Actions UI
   workflow_dispatch:
 
 jobs:
-  import-nh-des:
-    name: Import NH DES registered solid waste haulers
+  import-ri-rirrc:
+    name: Import RI RIRRC registered waste haulers
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
@@ -20,10 +23,10 @@ jobs:
           python-version: "3.11"
 
       - name: Install Python dependencies
-        run: pip install requests pandas supabase
+        run: pip install requests pdfplumber supabase
 
-      - name: Run NH DES hauler importer
-        run: python pipelines/nh-des-import/index.py
+      - name: Run RI RIRRC hauler importer
+        run: python pipelines/ri-rirrc-import/index.py
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}

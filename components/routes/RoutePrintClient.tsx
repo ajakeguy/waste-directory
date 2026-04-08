@@ -12,7 +12,8 @@
 
 import { useEffect, useRef } from "react";
 import { PrintToolbar } from "@/components/reports/PrintToolbar";
-import { haversineDistance } from "@/lib/route-optimizer";
+import { haversineDistance, kmToMiles } from "@/lib/route-optimizer";
+import { RouteCostCalculator } from "@/components/routes/RouteCostCalculator";
 import type { SavedRoute, RouteStop } from "@/types";
 
 declare global {
@@ -26,12 +27,18 @@ function distMi(a: RouteStop, b: RouteStop): string {
 
 type Props = {
   route: SavedRoute;
-  orderedStops: RouteStop[];
-  today: string;
 };
 
-export function RoutePrintClient({ route, orderedStops, today }: Props) {
+export function RoutePrintClient({ route }: Props) {
   const mapRef = useRef<HTMLDivElement>(null);
+
+  const orderedStops: RouteStop[] = route.optimized_order
+    ? route.optimized_order.map((i) => route.stops[i]).filter(Boolean)
+    : route.stops;
+
+  const today = new Date().toLocaleDateString("en-US", {
+    month: "long", day: "numeric", year: "numeric",
+  });
 
   useEffect(() => {
     const geocodedStops = orderedStops.filter((s) => s.lat && s.lng);
@@ -139,7 +146,7 @@ export function RoutePrintClient({ route, orderedStops, today }: Props) {
   }, []);
 
   const totalMi = route.total_distance_miles
-    ?? (route.total_distance_km ? route.total_distance_km * 0.621371 : null);
+    ?? (route.total_distance_km ? kmToMiles(route.total_distance_km) : null);
 
   return (
     <>
@@ -217,6 +224,9 @@ export function RoutePrintClient({ route, orderedStops, today }: Props) {
                     <td className="px-4 py-3">
                       {stop.name && <p className="font-medium text-gray-700 mb-0.5">{stop.name}</p>}
                       <p className="text-gray-600">{stop.address}</p>
+                      {stop.yards !== undefined && (
+                        <p className="text-gray-400 text-xs mt-0.5">{stop.yards} yd³</p>
+                      )}
                     </td>
                     <td className="px-4 py-3 text-right text-gray-500">{dist}</td>
                   </tr>
@@ -248,6 +258,19 @@ export function RoutePrintClient({ route, orderedStops, today }: Props) {
           </p>
         )}
 
+        {/* Cost calculator in print mode */}
+        {totalMi && orderedStops.length > 0 && (
+          <div className="mt-5">
+            <RouteCostCalculator
+              totalMiles={totalMi}
+              stopCount={orderedStops.length}
+              stops={orderedStops}
+              isEstimated={!route.total_distance_miles}
+              printMode={true}
+            />
+          </div>
+        )}
+
         <p className="text-xs text-gray-400 text-center mt-8 print:mt-4">
           WasteDirectory.com · Route Optimizer
         </p>
@@ -255,3 +278,5 @@ export function RoutePrintClient({ route, orderedStops, today }: Props) {
     </>
   );
 }
+
+export default RoutePrintClient;

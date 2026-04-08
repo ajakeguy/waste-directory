@@ -98,6 +98,84 @@ export function generateStaticParams() {
   return VALID_STATE_SLUGS.map((state) => ({ state }));
 }
 
+// ── State info banners ────────────────────────────────────────────────────────
+
+type StateInfo = {
+  source: string;
+  govBody: string;
+  requirements: string;
+  lastUpdated: string;
+};
+
+const STATE_INFO: Record<string, StateInfo> = {
+  connecticut: {
+    source: "Connecticut Department of Energy and Environmental Protection (DEEP) and municipal hauler permit registrations",
+    govBody: "CT DEEP, Waste Engineering and Enforcement Division",
+    requirements:
+      "Connecticut solid waste haulers must obtain permits from individual municipalities. CT DEEP regulates solid waste facilities under CGS Section 22a-208 et seq. Haulers transporting C&D debris or special waste must also comply with CT DEEP permit requirements. The state operates under a Solid Waste Management Plan requiring increasing diversion from disposal.",
+    lastUpdated: "Data sourced from municipal permit registrations — coverage expanding",
+  },
+  maine: {
+    source: "Maine DEP Non-Hazardous Waste Transporter List",
+    govBody: "Maine Department of Environmental Protection (ME DEP)",
+    requirements:
+      "Waste transporters operating in Maine must be licensed by the ME DEP under 38 M.R.S. §1304. Licenses are renewed annually and categorized by waste type: A (Special/C&D), B (Municipal Solid Waste), and C (Septage). Operating without a valid license is a civil violation.",
+    lastUpdated: "Updated from ME DEP active transporter list (2026)",
+  },
+  massachusetts: {
+    source:
+      "MassDEP Licensed Hazardous Waste Transporters list (March 2025) and municipal solid waste hauler permit registrations (in progress)",
+    govBody: "Massachusetts Department of Environmental Protection (MassDEP)",
+    requirements:
+      "Massachusetts does not maintain a statewide solid waste hauler registration system — regulation is handled at the municipal level by each of the state's 351 cities and towns. This directory currently includes companies licensed by MassDEP to transport hazardous waste, many of which also provide general solid waste services. Municipal hauler permit data is being added progressively by city and town. All haulers must comply with MassDEP Waste Disposal Bans under 310 CMR 19.017.",
+    lastUpdated:
+      "MassDEP Hazardous Waste Transporter list updated monthly; municipal permit data added as available",
+  },
+  "new-hampshire": {
+    source: "NH DES Registered Solid Waste Hauler List",
+    govBody: "New Hampshire Department of Environmental Services (NH DES)",
+    requirements:
+      "Solid waste collectors operating in New Hampshire must register with NH DES under RSA 149-M:29-a. Registration is renewed annually and requires disclosure of company name, address, and contact information. Haulers must comply with the NH Solid Waste Management Act and applicable local ordinances.",
+    lastUpdated: "Updated from NH DES registered hauler list (2025)",
+  },
+  "new-jersey": {
+    source: "New Jersey DEP A-901 Solid Waste Transporter Licenses",
+    govBody: "New Jersey Department of Environmental Protection (NJ DEP) — Division of Solid and Hazardous Waste",
+    requirements:
+      "Commercial solid waste transporters in New Jersey must hold an A-901 license issued by NJ DEP under N.J.S.A. 13:1E-126 et seq. The licensing process includes a criminal background investigation. Unlicensed transport of solid waste is a crime under New Jersey law. Licenses must be renewed every three years.",
+    lastUpdated: "Updated from NJ DEP A-901 license database (2025–2026)",
+  },
+  "new-york": {
+    source: "New York State DEC Solid Waste Transporter Registrations",
+    govBody: "New York State Department of Environmental Conservation (NYSDEC)",
+    requirements:
+      "Solid waste transporters in New York must register with NYSDEC under 6 NYCRR Part 364. Registration requires a vehicle list, insurance certificates, and compliance with state solid waste regulations. NYC commercial haulers are additionally licensed by the Business Integrity Commission (BIC).",
+    lastUpdated: "Updated from NYSDEC transporter registration data and NYC BIC license database (2025–2026)",
+  },
+  pennsylvania: {
+    source: "Pennsylvania DEP Waste Hauler (WH) Registration Database",
+    govBody: "Pennsylvania Department of Environmental Protection (PA DEP)",
+    requirements:
+      "Municipal and residual waste haulers in Pennsylvania must register with PA DEP under the Solid Waste Management Act (35 P.S. §§ 6018.101–6018.1003). Registration requires disclosure of vehicle information, insurance, and waste types transported. Registrations are renewed annually.",
+    lastUpdated: "Updated from PA DEP waste hauler registration database (2025–2026)",
+  },
+  "rhode-island": {
+    source: "Rhode Island Resource Recovery Corporation (RIRRC) Waste and Recycling Hauler List",
+    govBody:
+      "Rhode Island Resource Recovery Corporation (RIRRC) and RI Department of Environmental Management (RIDEM)",
+    requirements:
+      "Waste haulers operating in Rhode Island must register with RIRRC and comply with the Rhode Island Refuse Disposal Act (RIGL Chapter 23-18.9). Commercial haulers must also comply with the RI Recycling Act. RIRRC operates the Central Landfill in Johnston, RI — the state's primary disposal facility. Haulers transporting C&D debris must follow additional RIDEM regulations.",
+    lastUpdated: "Updated from RIRRC hauler list (October 2024)",
+  },
+  vermont: {
+    source: "Vermont DEC Solid Waste Hauler Permit Database",
+    govBody: "Vermont Department of Environmental Conservation (VT DEC) — Waste Management & Prevention Division",
+    requirements:
+      "Solid waste haulers in Vermont must hold a permit issued by VT DEC under 10 V.S.A. Chapter 159. Permits specify the types of waste authorized for collection and transport. Haulers must comply with Vermont's Universal Recycling Law (Act 148), which requires separate collection of food scraps, leaf and yard debris, and recyclables.",
+    lastUpdated: "Updated from VT DEC solid waste permit database (2025)",
+  },
+};
+
 // ── State landing page ────────────────────────────────────────────────────────
 
 function ResultsSkeleton() {
@@ -212,6 +290,33 @@ async function StateLandingPage({
 
       {/* Search + results */}
       <div className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+
+        {/* About this data banner */}
+        {STATE_INFO[segment] && (
+          <div className="bg-white border border-gray-200 rounded-xl p-6 mb-6">
+            <h2 className="text-base font-semibold text-gray-900 mb-3">
+              About this data
+            </h2>
+            <div className="space-y-3 text-sm text-gray-600">
+              <p>
+                <span className="font-medium text-gray-800">Data source:</span>{" "}
+                {STATE_INFO[segment].source}
+              </p>
+              <p>
+                <span className="font-medium text-gray-800">Governing body:</span>{" "}
+                {STATE_INFO[segment].govBody}
+              </p>
+              <p>
+                <span className="font-medium text-gray-800">Operating requirements:</span>{" "}
+                {STATE_INFO[segment].requirements}
+              </p>
+              <p className="text-xs text-gray-400 border-t border-gray-100 pt-3 mt-1">
+                {STATE_INFO[segment].lastUpdated}
+              </p>
+            </div>
+          </div>
+        )}
+
         {/* Toolbar: search bar + per-page selector */}
         <div className="flex flex-col sm:flex-row gap-3 mb-6">
           <div className="flex-1">
@@ -266,6 +371,16 @@ const LICENSE_METADATA_LABELS: Record<string, string> = {
   vt_permit_type:             "Permit Type (VT)",
   vt_permit_number:           "Permit Number (VT)",
   vt_waste_type_raw:          "Waste Type (VT)",
+  // Massachusetts DEP Hazardous Waste
+  ma_hw_license:              "HW License #",
+  ma_hw_expiration:           "License Expiry",
+  ma_hw_epa_number:           "EPA ID Number",
+  // New Hampshire DES
+  nh_date_registered:         "Registered Since",
+  // nh_contact_name / nh_contact_email / nh_website → surfaced in Contact Information
+  // Rhode Island RIRRC
+  ri_materials_hauled:        "Materials Hauled (RI)",
+  // ri_contact_name / ri_contact_email → surfaced in Contact Information
   // NYC BIC
   bic_number:                 "BIC License Number",
   boro:                       "Borough",
@@ -318,6 +433,29 @@ async function HaulerProfilePage({ segment }: { segment: string }) {
 
   const orgContacts = await getOrganizationContacts(org.id);
 
+  // ── Surface contact/website fields stored in license_metadata ────────────────
+  // Any key ending in _website, _contact_name, or _contact_email from ANY state
+  // is shown in Contact Information rather than the License section.
+  const meta = org.license_metadata ?? {};
+  const metaWebsite     = Object.entries(meta).find(([k]) => k.endsWith("_website"))?.[1]      ?? null;
+  const metaContactName = Object.entries(meta).find(([k]) => k.endsWith("_contact_name"))?.[1] ?? null;
+  const metaContactEmail= Object.entries(meta).find(([k]) => k.endsWith("_contact_email"))?.[1]?? null;
+
+  // Priority: org column → license_metadata fallback
+  const displayWebsite      = org.website      || metaWebsite      || null;
+  const displayContactEmail = org.email        || metaContactEmail  || null;
+
+  // Normalise URL: prepend https:// if the stored value has no scheme
+  const websiteHref = displayWebsite
+    ? (displayWebsite.startsWith("http") ? displayWebsite : `https://${displayWebsite}`)
+    : null;
+  const websiteLabel = displayWebsite ? displayWebsite.replace(/^https?:\/\//, "") : null;
+
+  // Keys to suppress in the License section (surfaced in Contact Information instead)
+  const CONTACT_META_SUFFIXES = ["_website", "_contact_name", "_contact_email"];
+  const isContactMeta = (key: string) =>
+    CONTACT_META_SUFFIXES.some((suffix) => key.endsWith(suffix));
+
   const correctionSubject = encodeURIComponent(
     `Correction suggestion: ${org.name}`
   );
@@ -364,7 +502,7 @@ async function HaulerProfilePage({ segment }: { segment: string }) {
         <h2 className="font-semibold text-gray-900 mb-4">
           Contact Information
         </h2>
-        {!org.phone && !org.email && !org.website ? (
+        {!org.phone && !displayContactEmail && !displayWebsite && !metaContactName ? (
           <p className="text-sm text-gray-400">
             No contact information on file.
           </p>
@@ -381,27 +519,36 @@ async function HaulerProfilePage({ segment }: { segment: string }) {
                 </a>
               </div>
             )}
-            {org.email && (
+            {/* Contact name from license_metadata (e.g. nh_contact_name) */}
+            {metaContactName && (
+              <div className="flex items-center gap-3 text-sm">
+                <UserCircle className="size-4 text-gray-400 shrink-0" />
+                <span className="text-gray-700">{metaContactName}</span>
+              </div>
+            )}
+            {/* Email: org column first, then license_metadata fallback */}
+            {displayContactEmail && (
               <div className="flex items-center gap-3 text-sm">
                 <Mail className="size-4 text-gray-400 shrink-0" />
                 <a
-                  href={`mailto:${org.email}`}
+                  href={`mailto:${displayContactEmail}`}
                   className="text-gray-700 hover:text-[#2D6A4F] transition-colors"
                 >
-                  {org.email}
+                  {displayContactEmail}
                 </a>
               </div>
             )}
-            {org.website && (
+            {/* Website: org column first, then license_metadata fallback */}
+            {websiteHref && websiteLabel && (
               <div className="flex items-center gap-3 text-sm">
                 <Globe className="size-4 text-gray-400 shrink-0" />
                 <a
-                  href={org.website}
+                  href={websiteHref}
                   target="_blank"
                   rel="noopener noreferrer"
                   className="text-gray-700 hover:text-[#2D6A4F] transition-colors"
                 >
-                  {org.website.replace(/^https?:\/\//, "")}
+                  {websiteLabel}
                 </a>
               </div>
             )}
@@ -440,28 +587,28 @@ async function HaulerProfilePage({ segment }: { segment: string }) {
         </section>
       )}
 
-      {/* License & Authorization Details — shown whenever column exists */}
-      {org.license_metadata !== null && org.license_metadata !== undefined && (
+      {/* License & Authorization Details — shown only when non-contact license keys exist */}
+      {org.license_metadata !== null &&
+        org.license_metadata !== undefined &&
+        Object.entries(org.license_metadata).some(([k, v]) => v && !isContactMeta(k)) && (
         <section className="bg-white rounded-xl border border-gray-200 p-5 mb-4">
           <h2 className="font-semibold text-gray-900 mb-3">
             License &amp; Authorization Details
           </h2>
-          {Object.keys(org.license_metadata).length === 0 ? (
-            <p className="text-sm text-gray-400">No license details on file.</p>
-          ) : (
-            <dl className="space-y-2">
-              {Object.entries(org.license_metadata).map(([key, value]) => {
-                if (!value) return null;
-                const label = LICENSE_METADATA_LABELS[key] ?? formatMetadataKey(key);
-                return (
-                  <div key={key} className="flex gap-3 text-sm">
-                    <dt className="text-gray-500 shrink-0 min-w-[140px]">{label}</dt>
-                    <dd className="text-gray-900 font-medium">{value}</dd>
-                  </div>
-                );
-              })}
-            </dl>
-          )}
+          <dl className="space-y-2">
+            {Object.entries(org.license_metadata).map(([key, value]) => {
+              // Skip blank values and contact-type fields (shown in Contact Information)
+              if (!value) return null;
+              if (isContactMeta(key)) return null;
+              const label = LICENSE_METADATA_LABELS[key] ?? formatMetadataKey(key);
+              return (
+                <div key={key} className="flex gap-3 text-sm">
+                  <dt className="text-gray-500 shrink-0 min-w-[140px]">{label}</dt>
+                  <dd className="text-gray-900 font-medium">{value}</dd>
+                </div>
+              );
+            })}
+          </dl>
         </section>
       )}
 

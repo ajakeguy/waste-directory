@@ -5,10 +5,12 @@
  *
  * Address input with ORS Pelias autocomplete dropdown.
  * Suggestions include coordinates — no second geocode call needed on selection.
+ * When locationType is provided, saved locations are fetched and shown above
+ * ORS suggestions, and a "Save this location" button appears after geocoding.
  */
 
 import { useEffect, useRef, useState, useCallback } from "react";
-import { Loader2, CheckCircle2, XCircle, Circle } from "lucide-react";
+import { Loader2, CheckCircle2, XCircle, Circle, Bookmark } from "lucide-react";
 
 const ORS_AUTOCOMPLETE =
   "https://api.openrouteservice.org/geocode/autocomplete";
@@ -22,6 +24,15 @@ type Suggestion = {
   lng: number;
 };
 
+type SavedLocation = {
+  id: string;
+  name: string;
+  address: string;
+  type: "depot" | "disposal" | "both";
+  lat: number | null;
+  lng: number | null;
+};
+
 export type GeocodeState = "idle" | "loading" | "ok" | "error";
 
 type Props = {
@@ -30,6 +41,8 @@ type Props = {
   className?: string;
   geocodeState?: GeocodeState;
   geocodeError?: string | null;
+  /** When provided, saved locations of this type are shown and a save button appears */
+  locationType?: "depot" | "disposal" | "both";
   onChange: (value: string) => void;
   /** Called when an address is resolved (either via suggestion click or manual blur) */
   onResolved: (address: string, lat: number, lng: number) => void;
@@ -54,17 +67,45 @@ export function AddressAutocomplete({
   className = "",
   geocodeState = "idle",
   geocodeError,
+  locationType,
   onChange,
   onResolved,
   onCleared,
 }: Props) {
-  const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
-  const [open,        setOpen]        = useState(false);
-  const [loading,     setLoading]     = useState(false);
-  const [activeIdx,   setActiveIdx]   = useState(-1);
+  const [suggestions,    setSuggestions]    = useState<Suggestion[]>([]);
+  const [open,           setOpen]           = useState(false);
+  const [loading,        setLoading]        = useState(false);
+  const [activeIdx,      setActiveIdx]      = useState(-1);
+  const [savedLocations, setSavedLocations] = useState<SavedLocation[]>([]);
+  // Save-location UI (shown when geocodeState === "ok" and locationType is set)
+  const [showSaveForm,   setShowSaveForm]   = useState(false);
+  const [saveName,       setSaveName]       = useState("");
+  const [savingLoc,      setSavingLoc]      = useState(false);
+  const [locSaved,       setLocSaved]       = useState(false);
+  // Track geocoded coords for saving
+  const resolvedCoordsRef = useRef<{ lat: number; lng: number } | null>(null);
+
   const debounceRef   = useRef<ReturnType<typeof setTimeout> | null>(null);
   const containerRef  = useRef<HTMLDivElement>(null);
   const inputRef      = useRef<HTMLInputElement>(null);
+
+  // ── Fetch saved locations on mount ───────────────────────────────────────────
+
+  useEffect(() => {
+    if (!locationType) return;
+    fetch(`/api/locations?type=${locationType}`)
+      .then((r) => (r.ok ? r.json() : []))
+      .then((data: SavedLocation[]) => setSavedLocations(data))
+      .catch(() => {/* not signed in or fetch failed — no saved locations */});
+  }, [locationType]);
+
+  // Reset save form whenever the address changes
+  useEffect(() => {
+    setShowSaveForm(false);
+    setLocSaved(false);
+    setSaveName("");
+    resolvedCoordsRef.current = null;
+  }, [value]);
 
   // ── Fetch autocomplete suggestions ───────────────────────────────────────────
 
@@ -109,7 +150,7 @@ export function AddressAutocomplete({
       })).filter((s) => s.label);
 
       setSuggestions(parsed);
-      setOpen(parsed.length > 0);
+      setOpen(parsed.length > 0 || savedLocations.length > 0);
       setActiveIdx(-1);
     } catch {
       setSuggestions([]);
@@ -117,21 +158,21 @@ export function AddressAutocomplete({
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [savedLocations.length]);
 
   // ── Debounce input changes ────────────────────────────────────────────────────
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const v = e.target.value;
     onChange(v);
-    onCleared(); // address changed — coordinates no longer valid
+    onCleared();
 
     if (debounceRef.current) clearTimeout(debounceRef.current);
     if (v.trim().length >= 3) {
       debounceRef.current = setTimeout(() => fetchSuggestions(v), 300);
     } else {
       setSuggestions([]);
-      setOpen(false);
+      setOpen(savedLocations.length > 0 && v.trim().length === 0 ? false : false);
     }
   };
 
@@ -142,8 +183,54 @@ export function AddressAutocomplete({
     setSuggestions([]);
     setOpen(false);
     setActiveIdx(-1);
-    // Coordinates come directly from the autocomplete response — no second call
+    resolvedCoordsRef.current = { lat: s.lat, lng: s.lng };
     onResolved(s.label, s.lat, s.lng);
+  }
+
+  function selectSavedLocation(loc: SavedLocation) {
+    onChange(loc.address);
+    setSuggestions([]);
+    setOpen(false);
+    setActiveIdx(-1);
+    if (loc.lat != null && loc.lng != null) {
+      resolvedCoordsRef.current = { lat: loc.lat, lng: loc.lng };
+      onResolved(loc.address, loc.lat, loc.lng);
+    } else {
+      onCleared();
+    }
+  }
+
+  async function saveLocation() {
+    if (!saveName.trim() || !locationType) return;
+    const coords = resolvedCoordsRef.current;
+    setSavingLoc(true);
+    try {
+      const res = await fetch("/api/locations", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name:    saveName.trim(),
+          address: value,
+          type:    locationType,
+          lat:     coords?.lat ?? null,
+          lng:     coords?.lng ?? null,
+        }),
+      });
+      if (res.ok) {
+        const newLoc = await res.json() as SavedLocation;
+        setSavedLocations((prev) => [newLoc, ...prev]);
+        setLocSaved(true);
+        setShowSaveForm(false);
+        setSaveName("");
+      }
+    } finally {
+      setSavingLoc(false);
+    }
+  }
+
+  async function deleteSavedLocation(id: string) {
+    await fetch(`/api/locations/${id}`, { method: "DELETE" });
+    setSavedLocations((prev) => prev.filter((l) => l.id !== id));
   }
 
   // ── Keyboard navigation ───────────────────────────────────────────────────────
@@ -201,7 +288,6 @@ export function AddressAutocomplete({
             <StatusIcon state={effectiveState} error={geocodeError} />
           </div>
         )}
-        {/* always show grey dot when idle and empty — subtle affordance */}
         {!showStatus && (
           <div className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none">
             <Circle className="size-3 text-gray-200" />
@@ -214,10 +300,98 @@ export function AddressAutocomplete({
         <p className="text-xs text-red-500 mt-1">{geocodeError}</p>
       )}
 
+      {/* Save location button — appears after successful geocode */}
+      {locationType && geocodeState === "ok" && !locSaved && (
+        <div className="mt-1">
+          {!showSaveForm ? (
+            <button
+              type="button"
+              onClick={() => setShowSaveForm(true)}
+              className="flex items-center gap-1 text-xs text-[#2D6A4F] hover:underline"
+            >
+              <Bookmark className="size-3" />
+              Save this location
+            </button>
+          ) : (
+            <div className="flex items-center gap-1.5 mt-1">
+              <input
+                type="text"
+                value={saveName}
+                onChange={(e) => setSaveName(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && saveLocation()}
+                placeholder="Location name (e.g. Main Depot)"
+                className="flex-1 h-7 rounded border border-gray-200 bg-white px-2 text-xs text-gray-900 focus:outline-none focus:ring-1 focus:ring-[#2D6A4F]/40"
+                autoFocus
+              />
+              <button
+                type="button"
+                onClick={saveLocation}
+                disabled={savingLoc || !saveName.trim()}
+                className="px-2 h-7 rounded bg-[#2D6A4F] text-white text-xs font-medium disabled:opacity-50"
+              >
+                {savingLoc ? "…" : "Save"}
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowSaveForm(false)}
+                className="px-2 h-7 rounded border border-gray-200 text-xs text-gray-500 hover:bg-gray-50"
+              >
+                Cancel
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+
+      {locationType && geocodeState === "ok" && locSaved && (
+        <p className="text-xs text-green-600 mt-1 flex items-center gap-1">
+          <Bookmark className="size-3" /> Saved!
+        </p>
+      )}
+
       {/* Dropdown */}
       {open && (
         <div className="absolute left-0 right-0 top-full mt-1 z-50 bg-white rounded-lg border border-gray-200 shadow-lg overflow-hidden">
-          {suggestions.length === 0 ? (
+          {/* Saved locations section */}
+          {savedLocations.length > 0 && (
+            <>
+              <p className="px-3 pt-2 pb-1 text-xs font-semibold text-gray-400 uppercase tracking-wide">
+                Saved Locations
+              </p>
+              <ul>
+                {savedLocations.map((loc) => (
+                  <li key={loc.id} className="flex items-center group border-b border-gray-50 last:border-0">
+                    <button
+                      type="button"
+                      className="flex-1 text-left px-3 py-2 text-sm hover:bg-[#2D6A4F]/5 transition-colors"
+                      onMouseDown={(e) => e.preventDefault()}
+                      onClick={() => selectSavedLocation(loc)}
+                    >
+                      <p className="font-medium text-[#2D6A4F] truncate">{loc.name}</p>
+                      <p className="text-xs text-gray-500 truncate">{loc.address}</p>
+                    </button>
+                    <button
+                      type="button"
+                      title="Remove saved location"
+                      onMouseDown={(e) => e.preventDefault()}
+                      onClick={() => deleteSavedLocation(loc.id)}
+                      className="px-2 py-2 text-gray-300 hover:text-red-400 opacity-0 group-hover:opacity-100 transition-opacity"
+                    >
+                      ×
+                    </button>
+                  </li>
+                ))}
+              </ul>
+              {suggestions.length > 0 && (
+                <p className="px-3 pt-2 pb-1 text-xs font-semibold text-gray-400 uppercase tracking-wide border-t border-gray-100">
+                  Suggestions
+                </p>
+              )}
+            </>
+          )}
+
+          {/* ORS suggestions */}
+          {suggestions.length === 0 && savedLocations.length === 0 ? (
             <p className="text-sm text-gray-400 px-3 py-2">No addresses found</p>
           ) : (
             <ul>
@@ -228,7 +402,7 @@ export function AddressAutocomplete({
                     className={`w-full text-left px-3 py-2.5 text-sm hover:bg-[#2D6A4F]/5 transition-colors border-b border-gray-50 last:border-0 ${
                       i === activeIdx ? "bg-[#2D6A4F]/8" : ""
                     }`}
-                    onMouseDown={(e) => e.preventDefault()} // prevent blur before click
+                    onMouseDown={(e) => e.preventDefault()}
                     onClick={() => selectSuggestion(s)}
                   >
                     <p className="font-medium text-gray-900 truncate">{s.name}</p>

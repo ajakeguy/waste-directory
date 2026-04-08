@@ -33,7 +33,8 @@ const RouteMap = dynamic(() => import("@/components/routes/RouteMap"), {
 import { AddressAutocomplete, type GeocodeState } from "@/components/routes/AddressAutocomplete";
 import { geocodeAddress } from "@/lib/geocoding";
 import { optimizeRoute, kmToMiles, haversineDistance } from "@/lib/route-optimizer";
-import { fetchRoadRoute } from "@/lib/road-routing";
+import { fetchRoadRoute, fetchRoadDistanceMatrix } from "@/lib/road-routing";
+import { RouteCostCalculator } from "@/components/routes/RouteCostCalculator";
 import type { RouteStop, SavedRoute } from "@/types";
 
 type LatLng = { lat: number; lng: number };
@@ -55,26 +56,37 @@ function parseCsvLine(line: string): string[] {
   return parts;
 }
 
-function parseCsv(text: string): Array<{ address: string; name: string }> {
+function parseCsv(text: string): Array<{ address: string; name: string; yards?: number }> {
   const lines = text.split(/\r?\n/).filter((l) => l.trim());
   if (!lines.length) return [];
   const rows  = lines.map(parseCsvLine);
   const first = rows[0].map((c) => c.toLowerCase());
-  const hasHeader = first.some((c) => ["address","name","location","stop"].includes(c));
-  let addrIdx = 0, nameIdx = 1;
+  const hasHeader = first.some((c) => ["address","name","location","stop","yards"].includes(c));
+  let addrIdx = 0, nameIdx = 1, yardsIdx = -1;
   if (hasHeader) {
     const ai = first.findIndex((c) => ["address","location","stop"].includes(c));
     const ni = first.findIndex((c) => ["name","label"].includes(c));
+    const yi = first.findIndex((c) => ["yards","yd3","yd³","cubic yards"].includes(c));
     if (ai !== -1) addrIdx = ai;
     if (ni !== -1) nameIdx = ni;
+    if (yi !== -1) yardsIdx = yi;
+  } else {
+    yardsIdx = 2; // assume 3rd column is yards if no header
   }
   return (hasHeader ? rows.slice(1) : rows)
     .filter((r) => r[addrIdx]?.trim())
-    .map((r) => ({ address: r[addrIdx].trim(), name: r[nameIdx]?.trim() ?? "" }));
+    .map((r) => {
+      const yardsRaw = yardsIdx >= 0 ? parseFloat(r[yardsIdx] ?? "") : NaN;
+      return {
+        address: r[addrIdx].trim(),
+        name: r[nameIdx]?.trim() ?? "",
+        yards: !isNaN(yardsRaw) && yardsRaw >= 0 ? yardsRaw : undefined,
+      };
+    });
 }
 
 function downloadSampleCsv() {
-  const csv = `address,name\n123 Main Street Burlington VT,Stop 1\n456 Pine Ave Montpelier VT,Stop 2\n`;
+  const csv = `address,name,yards\n123 Main Street Burlington VT,Stop 1,4.5\n456 Pine Ave Montpelier VT,Stop 2,3\n`;
   const blob = new Blob([csv], { type: "text/csv" });
   const a    = document.createElement("a");
   a.href     = URL.createObjectURL(blob);
@@ -116,6 +128,7 @@ export function RouteBuilder({ userId: _userId, existingRoute }: Props) {
 
   const [newAddr,  setNewAddr]  = useState("");
   const [newName,  setNewName]  = useState("");
+  const [newYards, setNewYards] = useState("");
   const [csvStatus,setCsvStatus]= useState<string | null>(null);
 
   // ── Geocode batch progress ─────────────────────────────────────────────────
@@ -139,6 +152,7 @@ export function RouteBuilder({ userId: _userId, existingRoute }: Props) {
   const [estimateRunning,    setEstimateRunning]     = useState(false);
   const [estimateIsRoad,     setEstimateIsRoad]      = useState(false);
   const [estimateGeojson,    setEstimateGeojson]     = useState<{ coordinates: [number, number][] } | null>(null);
+  const [estimateOrsFailure, setEstimateOrsFailure]  = useState(false);
 
   // ── Save state ─────────────────────────────────────────────────────────────
   const [saving,  setSaving]  = useState(false);
@@ -180,6 +194,7 @@ export function RouteBuilder({ userId: _userId, existingRoute }: Props) {
     setOptimizeMsg(null);
     setEstimateIsRoad(false);
     setEstimateGeojson(null);
+    setEstimateOrsFailure(false);
   }
 
   // ── Start address resolved (from autocomplete or manual geocode) ───────────
@@ -258,14 +273,16 @@ export function RouteBuilder({ userId: _userId, existingRoute }: Props) {
   async function addStop() {
     if (!newAddr.trim()) return;
     const id   = uuid();
+    const yardsVal = parseFloat(newYards);
     const stop: RouteStop = {
       id, address: newAddr.trim(),
       name: newName.trim() || `Stop ${stops.length + 1}`,
       geocoded: false,
+      yards: !isNaN(yardsVal) && yardsVal >= 0 ? yardsVal : undefined,
     };
     setStops((prev) => [...prev, stop]);
     setStopStates((prev) => ({ ...prev, [id]: { status: "loading" } }));
-    setNewAddr(""); setNewName("");
+    setNewAddr(""); setNewName(""); setNewYards("");
     markStale();
     // Geocode immediately
     await geocodeStop(id, stop.address);
@@ -275,6 +292,10 @@ export function RouteBuilder({ userId: _userId, existingRoute }: Props) {
     setStops((prev) => prev.filter((s) => s.id !== id));
     setStopStates((prev) => { const n = { ...prev }; delete n[id]; return n; });
     markStale();
+  }
+
+  function updateStopYards(id: string, yards: number | undefined) {
+    setStops((prev) => prev.map((s) => s.id === id ? { ...s, yards } : s));
   }
 
   // ── CSV upload ─────────────────────────────────────────────────────────────
@@ -291,6 +312,7 @@ export function RouteBuilder({ userId: _userId, existingRoute }: Props) {
         id: uuid(), address: r.address,
         name: r.name || `Stop ${stops.length + i + 1}`,
         geocoded: false,
+        yards: r.yards,
       }));
       setStops((prev) => [...prev, ...newStops]);
       setStopStates((prev) => {
@@ -396,26 +418,36 @@ export function RouteBuilder({ userId: _userId, existingRoute }: Props) {
     });
     setOptimizing(false);
 
-    // 2. Fetch real road route from ORS
+    // 2. Fetch distance with Matrix API (fast — show number immediately)
     setRoadFetching(true);
     const orderedCoords = orderedGeocodedStops
       .filter((s) => s?.lat && s?.lng)
       .map((s) => ({ lat: s.lat!, lng: s.lng! }));
 
-    const road = await fetchRoadRoute(startCoords, orderedCoords, endCoords);
+    const matrixMiles = await fetchRoadDistanceMatrix(startCoords, orderedCoords, endCoords);
+
     let finalMiles: number;
-    if (road) {
-      setRoadGeojson({ coordinates: road.coordinates });
-      finalMiles = road.distanceMiles;
-      setTotalDistanceMiles(road.distanceMiles);
+    if (matrixMiles !== null) {
+      finalMiles = matrixMiles;
     } else {
-      // Fall back to haversine estimate converted to miles
+      // Matrix failed — haversine fallback while geometry loads
       const { totalDistanceKm } = optimizeRoute(orderedCoords, startCoords, endCoords);
       finalMiles = kmToMiles(totalDistanceKm);
-      setTotalDistanceMiles(finalMiles);
     }
+    setTotalDistanceMiles(finalMiles);
     setRoadFetching(false);
     setOptimizeMsg(`Route optimized! Stops reordered to minimize distance. (${finalMiles.toFixed(1)} mi)`);
+
+    // 3. Fetch road geometry non-blocking — updates map when it arrives
+    fetchRoadRoute(startCoords, orderedCoords, endCoords).then((road) => {
+      if (road) {
+        setRoadGeojson({ coordinates: road.coordinates });
+        // If matrix failed we used haversine — update to real road distance now
+        if (matrixMiles === null) {
+          setTotalDistanceMiles(road.distanceMiles);
+        }
+      }
+    });
   }
 
   // ── Estimate distance in current (user-entered) order ─────────────────────
@@ -429,15 +461,18 @@ export function RouteBuilder({ userId: _userId, existingRoute }: Props) {
     setCurrentRouteMiles(null);
     setEstimateIsRoad(false);
     setEstimateGeojson(null);
+    setEstimateOrsFailure(false);
 
     const coordsInOrder = geocodedInOrder.map((s) => ({ lat: s.lat!, lng: s.lng! }));
-    const road = await fetchRoadRoute(startCoords, coordsInOrder, endCoords);
-    if (road) {
-      setCurrentRouteMiles(road.distanceMiles);
+
+    // Use Matrix API only — fast distance number, no map geometry for estimate
+    const matrixMiles = await fetchRoadDistanceMatrix(startCoords, coordsInOrder, endCoords);
+
+    if (matrixMiles !== null) {
+      setCurrentRouteMiles(matrixMiles);
       setEstimateIsRoad(true);
-      setEstimateGeojson({ coordinates: road.coordinates });
     } else {
-      // Haversine fallback: sum segment distances in current order
+      // Matrix failed — haversine fallback
       let total = haversineDistance(startCoords.lat, startCoords.lng, coordsInOrder[0].lat, coordsInOrder[0].lng);
       for (let i = 0; i < coordsInOrder.length - 1; i++) {
         total += haversineDistance(coordsInOrder[i].lat, coordsInOrder[i].lng, coordsInOrder[i + 1].lat, coordsInOrder[i + 1].lng);
@@ -445,6 +480,7 @@ export function RouteBuilder({ userId: _userId, existingRoute }: Props) {
       total += haversineDistance(coordsInOrder[coordsInOrder.length - 1].lat, coordsInOrder[coordsInOrder.length - 1].lng, endCoords.lat, endCoords.lng);
       setCurrentRouteMiles(kmToMiles(total));
       setEstimateIsRoad(false);
+      setEstimateOrsFailure(true);
     }
     setEstimateRunning(false);
   }
@@ -463,6 +499,7 @@ export function RouteBuilder({ userId: _userId, existingRoute }: Props) {
       stops:                stops.map((s) => ({
         id: s.id, address: s.address, name: s.name,
         lat: s.lat, lng: s.lng, geocoded: s.geocoded,
+        yards: s.yards,
       })),
       optimized_order:      optimizedOrder,
       total_distance_miles: totalDistanceMiles,
@@ -540,6 +577,7 @@ export function RouteBuilder({ userId: _userId, existingRoute }: Props) {
             placeholder="123 Depot Road, Burlington, VT"
             geocodeState={startState.status}
             geocodeError={startState.error}
+            locationType="depot"
             onChange={(v) => { setStartAddress(v); setStartCoords(null); setStartState({ status: "idle" }); }}
             onResolved={resolveStart}
             onCleared={() => { setStartCoords(null); setStartState({ status: "idle" }); markStale(); }}
@@ -580,14 +618,16 @@ export function RouteBuilder({ userId: _userId, existingRoute }: Props) {
                 onResolved={(addr, lat, lng) => {
                   // Directly add the stop with resolved coords
                   const id = uuid();
+                  const yardsVal = parseFloat(newYards);
                   const stop: RouteStop = {
                     id, address: addr,
                     name: newName.trim() || `Stop ${stops.length + 1}`,
                     lat, lng, geocoded: true,
+                    yards: !isNaN(yardsVal) && yardsVal >= 0 ? yardsVal : undefined,
                   };
                   setStops((prev) => [...prev, stop]);
                   setStopStates((prev) => ({ ...prev, [id]: { status: "ok" } }));
-                  setNewAddr(""); setNewName("");
+                  setNewAddr(""); setNewName(""); setNewYards("");
                   markStale();
                 }}
                 onCleared={() => {}}
@@ -599,6 +639,16 @@ export function RouteBuilder({ userId: _userId, existingRoute }: Props) {
               onChange={(e) => setNewName(e.target.value)}
               placeholder="Label (opt.)"
               className="w-28 flex h-9 rounded-md border border-gray-200 bg-white px-3 py-1 text-sm text-gray-900 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-[#2D6A4F]/30 focus:border-[#2D6A4F]"
+            />
+            <input
+              type="number"
+              value={newYards}
+              onChange={(e) => setNewYards(e.target.value)}
+              placeholder="yd³"
+              min="0"
+              step="0.5"
+              style={{ width: 80 }}
+              className="flex h-9 rounded-md border border-gray-200 bg-white px-3 py-1 text-sm text-gray-900 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-[#2D6A4F]/30 focus:border-[#2D6A4F]"
             />
             <Button
               type="button"
@@ -659,6 +709,21 @@ export function RouteBuilder({ userId: _userId, existingRoute }: Props) {
                         <p className="text-red-500 text-xs truncate">{ss.error}</p>
                       )}
                     </div>
+                    {/* Inline yards input */}
+                    <input
+                      type="number"
+                      min="0"
+                      step="0.5"
+                      placeholder="yd³"
+                      value={stop.yards ?? ""}
+                      onChange={(e) => updateStopYards(
+                        stop.id,
+                        e.target.value === "" ? undefined : parseFloat(e.target.value)
+                      )}
+                      onClick={(e) => e.stopPropagation()}
+                      onMouseDown={(e) => e.stopPropagation()}
+                      className="w-14 h-6 text-xs border border-gray-200 rounded px-1 text-gray-600 placeholder:text-gray-300 focus:outline-none focus:ring-1 focus:ring-[#2D6A4F]/40 shrink-0 cursor-text"
+                    />
                     {/* Status icon */}
                     {ss.status === "loading" && <Loader2 className="size-3.5 text-gray-400 animate-spin shrink-0" />}
                     {ss.status === "ok"      && <span className="size-3.5 rounded-full bg-green-500 shrink-0 flex items-center justify-center"><svg viewBox="0 0 10 10" className="w-2 h-2 fill-white"><path d="M1.5 5l2.5 2.5 4.5-4.5" stroke="white" strokeWidth="1.5" fill="none" strokeLinecap="round"/></svg></span>}
@@ -683,6 +748,7 @@ export function RouteBuilder({ userId: _userId, existingRoute }: Props) {
             placeholder="789 Transfer Station Rd, Montpelier, VT"
             geocodeState={endState.status}
             geocodeError={endState.error}
+            locationType="disposal"
             onChange={(v) => { setEndAddress(v); setEndCoords(null); setEndState({ status: "idle" }); }}
             onResolved={resolveEnd}
             onCleared={() => { setEndCoords(null); setEndState({ status: "idle" }); markStale(); }}
@@ -725,11 +791,26 @@ export function RouteBuilder({ userId: _userId, existingRoute }: Props) {
             disabled={!canEstimate}
           >
             {estimateRunning ? (
-              <><Loader2 className="size-4 animate-spin" />Estimating…</>
+              <><Loader2 className="size-4 animate-spin" />Calculating road distance…</>
             ) : (
               <><MapPin className="size-4" />Estimate Current Route</>
             )}
           </Button>
+
+          {/* Loading note for large routes */}
+          {estimateRunning && (
+            <p className="text-xs text-gray-400 text-center -mt-1">
+              May take up to 30 seconds for large routes
+            </p>
+          )}
+
+          {/* ORS failure warning */}
+          {estimateOrsFailure && currentRouteMiles !== null && (
+            <div className="rounded-lg bg-amber-50 border border-amber-200 px-3 py-2 text-xs text-amber-700">
+              <AlertTriangle className="size-3 inline mr-1 shrink-0" />
+              Road distance unavailable — ORS timed out. Showing straight-line estimate instead.
+            </div>
+          )}
 
           {/* Current order estimate result (when no optimized result yet) */}
           {currentRouteMiles !== null && totalDistanceMiles === null && (
@@ -737,7 +818,7 @@ export function RouteBuilder({ userId: _userId, existingRoute }: Props) {
               <p className="text-xs text-gray-500 uppercase tracking-wide mb-0.5">Current route (entered order)</p>
               <p className="text-xl font-bold text-gray-700">{currentRouteMiles.toFixed(1)} mi</p>
               <p className="text-xs text-gray-400 mt-0.5">
-                {estimateIsRoad ? "road distance" : "est. straight-line"}
+                {estimateIsRoad ? "road distance" : "straight-line estimate"}
               </p>
             </div>
           )}
@@ -830,8 +911,8 @@ export function RouteBuilder({ userId: _userId, existingRoute }: Props) {
         </section>
       </div>
 
-      {/* ── RIGHT PANEL: Map ───────────────────────────────────────────────── */}
-      <div className="flex-1 sticky top-24 self-start">
+      {/* ── RIGHT PANEL: Map + Cost Calculator ───────────────────────────── */}
+      <div className="flex-1 sticky top-24 self-start space-y-5">
         <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
           <RouteMap
             startCoords={startCoords}
@@ -841,6 +922,24 @@ export function RouteBuilder({ userId: _userId, existingRoute }: Props) {
             height={500}
           />
         </div>
+
+        {/* Cost calculator — shown whenever we have a distance + at least one stop.
+            Priority: fresh road estimate > optimized road distance > stale/haversine saved value */}
+        {(() => {
+          const costMiles = (estimateIsRoad && currentRouteMiles !== null)
+            ? currentRouteMiles
+            : (totalDistanceMiles ?? currentRouteMiles ?? null);
+          if (costMiles === null || stops.length === 0) return null;
+          const costIsEstimated = !(estimateIsRoad || roadGeojson);
+          return (
+            <RouteCostCalculator
+              totalMiles={costMiles}
+              stopCount={stops.filter((s) => s.geocoded).length || stops.length}
+              stops={stops}
+              isEstimated={costIsEstimated}
+            />
+          );
+        })()}
       </div>
     </div>
   );
