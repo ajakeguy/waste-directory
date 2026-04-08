@@ -291,81 +291,42 @@ def import_mrfs(
         print(f"  Save as: {MRF_PDF}")
         return 0, 0, 0, 0
 
-    print(f"  Reading: {MRF_PDF}")
-    text = pdf_to_text(MRF_PDF)
+    # Confirmed column layout (page 2 only — page 1 is a map image):
+    # [0] Map Number  [1] Facility Name  [2] Address  [3] Town  [4] State
+    # [5] Zip         [6] Phone Number   [7] Email    [8] Material Streams Accepted
 
-    # Try table extraction first
-    table_rows = parse_pdf_table_rows(MRF_PDF)
+    def cell(row: list, idx: int) -> str:
+        return row[idx].replace("\n", " ").strip() if idx < len(row) and row[idx] else ""
+
     records: list[dict] = []
-
-    if table_rows:
-        print(f"  Table rows found: {len(table_rows)}")
-        # Detect header row -- skip rows where first cell looks like a column heading
-        header_keywords = {"facility", "name", "address", "city", "phone", "operator", "material"}
-        for row in table_rows:
-            if not row or not row[0]:
+    with pdfplumber.open(MRF_PDF) as pdf:
+        print(f"  Pages: {len(pdf.pages)}")
+        for page in pdf.pages:
+            tables = page.extract_tables()
+            if not tables:
                 continue
-            if row[0].lower().strip() in header_keywords:
-                continue
-            name = row[0].strip()
-            if not name or len(name) < 3:
-                continue
-            # Best-effort field mapping from table columns
-            address = row[1].strip() if len(row) > 1 else None
-            city    = row[2].strip() if len(row) > 2 else None
-            phone   = clean_phone(row[3]) if len(row) > 3 else None
-            if not phone:
-                # Try to find phone anywhere in the row
-                phone = extract_phone_from_text(" ".join(row))
+            for table in tables:
+                for row in table:
+                    # Skip header row (first cell starts with "Map")
+                    if not row or not row[0] or str(row[0]).strip().startswith("Map"):
+                        continue
+                    # Skip non-data rows (first cell must be a digit = map number)
+                    map_num = str(row[0] or "").replace("\n", " ").strip()
+                    if not map_num or not map_num[0].isdigit():
+                        continue
 
-            records.append({
-                "name":                "".join(name.title().splitlines()),
-                "facility_type":       "mrf",
-                "address":             str_or_none(address),
-                "city":                city.title() if city else None,
-                "state":               "MA",
-                "zip":                 extract_zip_from_text(" ".join(row)),
-                "phone":               phone,
-                "permit_status":       "active",
-                "accepts_recycling":   True,
-                "service_area_states": ["MA"],
-                "data_source":         "ma_dep_mrf_2026",
-                "verified":            True,
-                "active":              True,
-            })
-    else:
-        # Text-line fallback: look for lines that start with an uppercase facility name
-        print("  No tables found -- using text-line fallback")
-        lines = [l.strip() for l in text.splitlines() if l.strip()]
-        # Heuristic: a facility name line is mostly uppercase/title-case, >=10 chars,
-        # followed by an address line (starts with a digit)
-        i = 0
-        while i < len(lines):
-            line = lines[i]
-            if (len(line) >= 5
-                    and not line[0].isdigit()
-                    and not PHONE_RE.match(line)
-                    and re.match(r"[A-Z]", line)):
-                name    = line.title()
-                address = lines[i + 1] if i + 1 < len(lines) and lines[i+1][0:1].isdigit() else None
-                block   = " ".join(lines[i : i + 4])
-                phone   = extract_phone_from_text(block)
-                zip_val = extract_zip_from_text(block)
-                # Try to find city from "CITY, MA XXXXX" pattern
-                city = None
-                csz_m = CITY_STATE_ZIP_RE.search(block)
-                if csz_m:
-                    city = csz_m.group(1).title()
+                    name = cell(row, 1)
+                    if not name or len(name) < 3:
+                        continue
 
-                if name and len(name) >= 5:
                     records.append({
-                        "name":                name,
+                        "name":                " ".join(name.title().split()),
                         "facility_type":       "mrf",
-                        "address":             str_or_none(address),
-                        "city":                city,
-                        "state":               "MA",
-                        "zip":                 zip_val,
-                        "phone":               phone,
+                        "address":             str_or_none(cell(row, 2)),
+                        "city":                cell(row, 3).title() or None,
+                        "state":               cell(row, 4) or "MA",
+                        "zip":                 str_or_none(cell(row, 5)),
+                        "phone":               clean_phone(cell(row, 6)),
                         "permit_status":       "active",
                         "accepts_recycling":   True,
                         "service_area_states": ["MA"],
@@ -373,7 +334,6 @@ def import_mrfs(
                         "verified":            True,
                         "active":              True,
                     })
-            i += 1
 
     print(f"  Records parsed: {len(records)}")
     skipped, inserted, errors = batch_insert(supabase, records, existing_slugs, slug_counter, "MRF")
@@ -399,73 +359,52 @@ def import_composting(
         print(f"  Save as: {COMP_PDF}")
         return 0, 0, 0, 0
 
-    print(f"  Reading: {COMP_PDF}")
-    text = pdf_to_text(COMP_PDF)
+    # Confirmed column layout (pages 2-4 — page 1 is a map image):
+    # [0] Map Number  [1] Facility Category  [2] Company  [3] Address
+    # [4] City        [5] ZIP                [6] Contact  [7] Phone
 
-    table_rows = parse_pdf_table_rows(COMP_PDF)
+    CATEGORY_MAP = {
+        "compost":            "composting",
+        "anaerobic digester": "anaerobic_digestion",
+        "animal feed":        "composting",   # organics diversion — include
+    }
+
+    def cell(row: list, idx: int) -> str:
+        return row[idx].replace("\n", " ").strip() if idx < len(row) and row[idx] else ""
+
     records: list[dict] = []
-
-    if table_rows:
-        print(f"  Table rows found: {len(table_rows)}")
-        header_keywords = {"facility", "name", "address", "city", "phone", "operator", "site", "town"}
-        for row in table_rows:
-            if not row or not row[0]:
+    with pdfplumber.open(COMP_PDF) as pdf:
+        print(f"  Pages: {len(pdf.pages)}")
+        for page in pdf.pages:
+            tables = page.extract_tables()
+            if not tables:
                 continue
-            if row[0].lower().strip() in header_keywords:
-                continue
-            name = row[0].strip()
-            if not name or len(name) < 3:
-                continue
-            address = row[1].strip() if len(row) > 1 else None
-            city    = row[2].strip() if len(row) > 2 else None
-            phone   = clean_phone(row[3]) if len(row) > 3 else None
-            if not phone:
-                phone = extract_phone_from_text(" ".join(row))
+            for table in tables:
+                for row in table:
+                    # Skip header rows (first cell starts with "Map")
+                    if not row or not row[0] or str(row[0]).strip().startswith("Map"):
+                        continue
+                    # First cell must be a digit (map number)
+                    map_num = str(row[0] or "").replace("\n", " ").strip()
+                    if not map_num or not map_num[0].isdigit():
+                        continue
 
-            records.append({
-                "name":                "".join(name.title().splitlines()),
-                "facility_type":       "composting",
-                "address":             str_or_none(address),
-                "city":                city.title() if city else None,
-                "state":               "MA",
-                "zip":                 extract_zip_from_text(" ".join(row)),
-                "phone":               phone,
-                "permit_status":       "active",
-                "accepts_organics":    True,
-                "service_area_states": ["MA"],
-                "data_source":         "ma_dep_composting_2025",
-                "verified":            True,
-                "active":              True,
-            })
-    else:
-        print("  No tables found -- using text-line fallback")
-        lines = [l.strip() for l in text.splitlines() if l.strip()]
-        i = 0
-        while i < len(lines):
-            line = lines[i]
-            if (len(line) >= 5
-                    and not line[0].isdigit()
-                    and not PHONE_RE.match(line)
-                    and re.match(r"[A-Z]", line)):
-                name    = line.title()
-                address = lines[i + 1] if i + 1 < len(lines) and lines[i+1][0:1].isdigit() else None
-                block   = " ".join(lines[i : i + 4])
-                phone   = extract_phone_from_text(block)
-                zip_val = extract_zip_from_text(block)
-                city    = None
-                csz_m   = CITY_STATE_ZIP_RE.search(block)
-                if csz_m:
-                    city = csz_m.group(1).title()
+                    category_raw = cell(row, 1).lower()
+                    fac_type     = CATEGORY_MAP.get(category_raw, "composting")
 
-                if name and len(name) >= 5:
+                    name = cell(row, 2)
+                    if not name or len(name) < 3:
+                        continue
+
                     records.append({
-                        "name":                name,
-                        "facility_type":       "composting",
-                        "address":             str_or_none(address),
-                        "city":                city,
+                        "name":                " ".join(name.title().split()),
+                        "facility_type":       fac_type,
+                        "address":             str_or_none(cell(row, 3)),
+                        "city":                cell(row, 4).title() or None,
                         "state":               "MA",
-                        "zip":                 zip_val,
-                        "phone":               phone,
+                        "zip":                 str_or_none(cell(row, 5)),
+                        "operator_name":       str_or_none(cell(row, 6)),
+                        "phone":               clean_phone(cell(row, 7)),
                         "permit_status":       "active",
                         "accepts_organics":    True,
                         "service_area_states": ["MA"],
@@ -473,7 +412,6 @@ def import_composting(
                         "verified":            True,
                         "active":              True,
                     })
-            i += 1
 
     print(f"  Records parsed: {len(records)}")
     skipped, inserted, errors = batch_insert(supabase, records, existing_slugs, slug_counter, "COMP")
