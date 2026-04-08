@@ -8,6 +8,7 @@ Sources (public ArcGIS Feature Services, no auth required):
   1. Transfer Stations (truck-to-truck)  → transfer_station
   2. Rail Transfer Stations              → transfer_station
   3. Resource Recovery Facilities        → waste_to_energy
+  4. Organics Data                       → composting / anaerobic_digestion / recycling_center
 
 Required env vars:
     SUPABASE_URL
@@ -59,6 +60,11 @@ ENDPOINTS = [
         "state_field":       "State_1",
         "phone_field":       "Phone_Number",
         "contact_field":     "Company_Contact",
+    },
+    {
+        "path":    "OrganicsData/FeatureServer/0/query",
+        "label":   "Organics Data (composting / AD)",
+        "organics": True,  # parsed differently — use parse_organics_features()
     },
 ]
 
@@ -226,6 +232,84 @@ def parse_features(features: list[dict], endpoint: dict) -> list[dict]:
     return records
 
 
+# ── Organics type mapping ──────────────────────────────────────────────────────
+
+CT_ORGANICS_TYPE_MAP: dict[str, str] = {
+    "recycling center":                        "recycling_center",
+    "transfer station":                        "transfer_station",
+    "anaerobic digester (ad)":                 "anaerobic_digestion",
+    "anaerobic digester farm (ad)":            "anaerobic_digestion",
+    "food waste composting facility":          "composting",
+    "aerated static pile composting (asp)":   "composting",
+    "food waste into animal feed supplement":  "composting",
+}
+
+
+def parse_organics_features(features: list[dict]) -> list[dict]:
+    """Parse CT OrganicsData features (different schema from transfer stations)."""
+    records = []
+    for feat in features:
+        attrs = feat.get("attributes", {})
+
+        # Skip out-of-state facilities
+        out_of_state = str_or_none(attrs.get("OutOfState")) or ""
+        if out_of_state.upper() == "YES":
+            continue
+
+        name = str_or_none(attrs.get("CompanyName"))
+        if not name:
+            continue
+
+        raw_type = (str_or_none(attrs.get("FacilityType")) or "").strip().lower()
+        facility_type = CT_ORGANICS_TYPE_MAP.get(raw_type, "composting")
+
+        # Parse "Street, City, State, Zip" address format
+        raw_addr = str_or_none(attrs.get("FacilityAddress")) or ""
+        street, city, zip_val = None, None, None
+        if raw_addr:
+            parts = [p.strip() for p in raw_addr.split(",")]
+            if len(parts) >= 2:
+                street = parts[0].title()
+                # Find city: first non-state, non-zip part
+                for p in parts[1:]:
+                    p = p.strip()
+                    if p.upper() in ("CT", "CONNECTICUT"):
+                        continue
+                    if re.match(r"^\d{5}$", p):
+                        zip_val = p
+                        continue
+                    if p and not city:
+                        city = p.title()
+            else:
+                street = raw_addr
+
+        lat = attrs.get("Latitude")
+        lng = attrs.get("Longitude")
+        website = str_or_none(attrs.get("MoreInfo"))
+
+        accepts_recycling = facility_type == "recycling_center"
+        accepts_organics  = facility_type in ("composting", "anaerobic_digestion")
+        accepts_msw       = facility_type == "transfer_station"
+
+        records.append({
+            "name":          name.strip().title(),
+            "facility_type": facility_type,
+            "address":       street,
+            "city":          city,
+            "state":         "CT",
+            "zip":           zip_val,
+            "website":       website,
+            "lat":           float(lat) if lat else None,
+            "lng":           float(lng) if lng else None,
+            "permit_status": "active",
+            "is_active":     True,
+            "accepts_recycling": accepts_recycling,
+            "accepts_organics":  accepts_organics,
+            "accepts_msw":       accepts_msw,
+        })
+    return records
+
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main() -> None:
@@ -238,7 +322,10 @@ def main() -> None:
     all_records: list[dict] = []
     for ep in ENDPOINTS:
         features = fetch_features(ep)
-        records  = parse_features(features, ep)
+        if ep.get("organics"):
+            records = parse_organics_features(features)
+        else:
+            records = parse_features(features, ep)
         print(f"  Records parsed: {len(records)}")
         all_records.extend(records)
 
@@ -311,11 +398,15 @@ def main() -> None:
             "city":                rec["city"],
             "state":               rec["state"],
             "zip":                 rec["zip"],
-            "phone":               rec["phone"],
-            "permit_number":       rec["permit_number"],
-            "permit_status":       rec["permit_status"],
+            "phone":               rec.get("phone"),
+            "website":             rec.get("website"),
+            "permit_number":       rec.get("permit_number"),
+            "permit_status":       rec.get("permit_status", "active"),
             "lat":                 rec["lat"],
             "lng":                 rec["lng"],
+            "accepts_msw":         rec.get("accepts_msw", False),
+            "accepts_recycling":   rec.get("accepts_recycling", False),
+            "accepts_organics":    rec.get("accepts_organics", False),
             "service_area_states": ["CT"],
             "data_source":         DATA_SOURCE,
             "verified":            True,

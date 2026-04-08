@@ -2,16 +2,16 @@
 """
 pipelines/ri-disposal-import/index.py
 
-Imports RI DEM active solid waste facility records from ArcGIS.
+Imports RI DEM active solid waste facility records from RIGIS ArcGIS.
 
-Source: RI DEM Office of Water Resources — Active Solid Waste Facility Sites
+Source: RIGIS — Active Solid Waste Facility Sites (RI DEM / OWM)
   https://services2.arcgis.com/S8zZg9pg23JUEexQ/arcgis/rest/services/
     Active_Solid_Waste_Facility_Sites/FeatureServer/0
-  61 records covering composting, transfer stations, recycling centers,
-  residential drop-offs, and the RIRRC Central Landfill.
+  61 records: composting, landfill, transfer stations, recycling centers,
+  and residential drop-off sites.
 
-Fields: Facility, Fac_Type, Match_addr, Phone, Map_Catego, Mater_Hand,
-        Tons_Year + geometry (lat/lng)
+Fields: Facility, Fac_Type, Match_addr, Phone, Own_Type, Oper_Type,
+        Mater_Hand, Cap_Desc, Tons_Year, Regulation + geometry (lat/lng)
 
 Required env vars:
     SUPABASE_URL
@@ -38,17 +38,18 @@ ARCGIS_URL = (
 SAFE_MAX   = 500
 BATCH_SIZE = 50
 
-RI_TYPE_MAP = {
-    "L&Y Composting":                          "composting",
-    "Putrescible Composting":                  "composting",
-    "Residential Drop-Off":                    "recycling_center",
-    "Transfer":                                "transfer_station",
-    "Transfer and C&D":                        "transfer_station",
-    "Transfer/Residential":                    "transfer_station",
-    "Transfer, C&D and Landfill":              "transfer_station",
-    "Landfill":                                "landfill",
-    "Recycling Center":                        "recycling_center",
-    "Recycling Center and Residental Drop-Off":"recycling_center",
+# (facility_type, accepts_flags)
+RI_TYPE_MAP: dict[str, tuple[str, dict]] = {
+    "L&Y Composting":                            ("composting",       {"accepts_organics": True}),
+    "Putrescible Composting":                    ("composting",       {"accepts_organics": True}),
+    "Landfill":                                  ("landfill",         {"accepts_msw": True}),
+    "Transfer and C&D":                          ("cd_facility",      {"accepts_cd": True}),
+    "Transfer, C&D and Landfill":                ("landfill",         {"accepts_msw": True, "accepts_cd": True}),
+    "Transfer":                                  ("transfer_station", {"accepts_msw": True}),
+    "Transfer/Residential":                      ("transfer_station", {"accepts_msw": True}),
+    "Recycling Center":                          ("mrf",              {"accepts_recycling": True}),
+    "Recycling Center and Residental Drop-Off":  ("mrf",              {"accepts_recycling": True}),
+    "Residential Drop-Off":                      ("transfer_station", {"accepts_recycling": True}),
 }
 
 # ---------------------------------------------------------------------------
@@ -75,9 +76,7 @@ def make_slug(name: str, city: str = "") -> str:
 
 def parse_match_addr(addr: str) -> tuple[str | None, str | None, str | None]:
     """
-    Parse a geocoded address like:
-      '295 GEORGE WASHINGTON HWY, SMITHFIELD, 02917'
-    Returns (street, city, zip).
+    Parse '295 GEORGE WASHINGTON HWY, SMITHFIELD, 02917' → (street, city, zip).
     """
     if not addr:
         return None, None, None
@@ -96,27 +95,41 @@ def parse_match_addr(addr: str) -> tuple[str | None, str | None, str | None]:
     return addr.title(), None, None
 
 
+def build_notes(attrs: dict) -> str | None:
+    parts = []
+    for label, key in [("Owner", "Own_Type"), ("Operator", "Oper_Type"),
+                        ("Materials", "Mater_Hand"), ("Capacity", "Cap_Desc")]:
+        val = str_or_none(attrs.get(key))
+        if val:
+            parts.append(f"{label}: {val}")
+    return " | ".join(parts) if parts else None
+
+
 def map_facility(feature: dict) -> dict | None:
     attrs = feature["attributes"]
     geo   = feature.get("geometry", {}) or {}
 
-    fac_type      = str_or_none(attrs.get("Fac_Type")) or ""
-    facility_type = RI_TYPE_MAP.get(fac_type, "recycling_center")
+    fac_type_raw = str_or_none(attrs.get("Fac_Type")) or ""
+    if fac_type_raw in RI_TYPE_MAP:
+        facility_type, flags = RI_TYPE_MAP[fac_type_raw]
+    else:
+        facility_type, flags = "transfer_station", {}
 
     name = str_or_none(attrs.get("Facility"))
     if not name:
         return None
 
-    match_addr       = str_or_none(attrs.get("Match_addr")) or ""
+    match_addr = str_or_none(attrs.get("Match_addr")) or ""
     street, city, zip_ = parse_match_addr(match_addr)
 
     lat = geo.get("y")
     lng = geo.get("x")
 
-    accepts_msw       = facility_type in ("transfer_station", "landfill")
-    accepts_recycling = facility_type == "recycling_center"
-    accepts_organics  = facility_type == "composting"
-    accepts_cd        = "C&D" in fac_type
+    # Capacity: convert Tons_Year → tons/day
+    tons_year = attrs.get("Tons_Year")
+    cap_tpd: float | None = None
+    if tons_year and float(tons_year) > 0:
+        cap_tpd = round(float(tons_year) / 365, 2)
 
     return {
         "name":          name.strip().title(),
@@ -129,12 +142,14 @@ def map_facility(feature: dict) -> dict | None:
         "lat":           float(lat) if lat else None,
         "lng":           float(lng) if lng else None,
         "permit_status": "active",
+        "permitted_capacity_tons_per_day": cap_tpd,
+        "notes":         build_notes(attrs),
         "service_area_states": ["RI"],
-        "data_source":   "ri_dem_2025",
-        "accepts_msw":   accepts_msw,
-        "accepts_recycling": accepts_recycling,
-        "accepts_organics": accepts_organics,
-        "accepts_cd":    accepts_cd,
+        "data_source":   "ri_rigis_2025",
+        "accepts_msw":       flags.get("accepts_msw", False),
+        "accepts_recycling": flags.get("accepts_recycling", False),
+        "accepts_organics":  flags.get("accepts_organics", False),
+        "accepts_cd":        flags.get("accepts_cd", False),
         "verified":      True,
         "active":        True,
     }
@@ -146,7 +161,7 @@ def map_facility(feature: dict) -> dict | None:
 
 def main() -> None:
     print("=" * 60)
-    print("RI DEM Active Solid Waste Facilities Importer")
+    print("RI RIGIS Active Solid Waste Facilities Importer")
     print(f"Run date: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
     print("=" * 60)
 
@@ -157,6 +172,14 @@ def main() -> None:
         sys.exit(1)
 
     supabase: Client = create_client(supabase_url, service_role_key)
+
+    # Delete existing RI records from prior imports
+    print("\nDeleting existing RI records ...")
+    del_resp = supabase.table("disposal_facilities").delete().in_(
+        "data_source", ["ri_dem_2025", "ri_rirrc_2025", "ri_2025", "ri_rigis_2025"]
+    ).execute()
+    deleted = len(del_resp.data) if del_resp.data else 0
+    print(f"Deleted: {deleted} RI records")
 
     print("\nLoading existing slugs ...")
     existing_slugs: set[str] = set()
@@ -171,7 +194,7 @@ def main() -> None:
         offset += 1000
     print(f"Existing facilities in DB: {len(existing_slugs)}")
 
-    print("\nFetching RI active solid waste facilities ...")
+    print("\nFetching RI RIGIS active solid waste facilities ...")
     try:
         r = requests.get(
             ARCGIS_URL,
@@ -179,7 +202,8 @@ def main() -> None:
                 "where":             "1=1",
                 "outFields":         "*",
                 "f":                 "json",
-                "resultRecordCount": 500,
+                "returnGeometry":    "true",
+                "resultRecordCount": 1000,
                 "outSR":             "4326",
             },
             headers=HEADERS,

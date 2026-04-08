@@ -122,6 +122,12 @@ def map_facility(attrs: dict) -> dict | None:
     accepts_recycling = facility_type in ("mrf", "recycling_center")
     accepts_organics  = facility_type == "composting"
 
+    # NH DES OneStop profile URL (rn = registry number = permit number)
+    website = (
+        f"https://www4.des.nh.gov/OneStop/registry/Registry.aspx?rn={permit}"
+        if permit else None
+    )
+
     return {
         "name":          name,
         "facility_type": facility_type,
@@ -132,6 +138,7 @@ def map_facility(attrs: dict) -> dict | None:
         "lng":           lng if lng and lng != 0 else None,
         "permit_number": permit,
         "permit_status": "active",
+        "website":       website,
         "service_area_states": ["NH"],
         "data_source":   "nh_des_2025",
         "accepts_msw":   accepts_msw,
