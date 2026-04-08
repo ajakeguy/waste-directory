@@ -23,7 +23,7 @@ jobs:
           python-version: "3.11"
 
       - name: Install Python dependencies
-        run: pip install pandas openpyxl supabase
+        run: pip install pandas openpyxl pdfplumber supabase
 
       - name: Run MA disposal facilities importer
         run: python pipelines/ma-disposal-import/index.py
