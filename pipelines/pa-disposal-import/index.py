@@ -2,29 +2,36 @@
 """
 pipelines/pa-disposal-import/index.py
 
-Imports PA DEP municipal waste facility records by scraping the DEP website.
+Imports PA DEP municipal waste facility records by scraping the DEP website,
+enriches existing records with volume / municipality / contact data, and
+imports transfer stations from the PA DEP ArcGIS Hub CSV.
 
-Source: PA DEP — Municipal Waste Landfills and Resource Recovery Facilities
-  https://www.pa.gov/agencies/dep/programs-and-services/business/
-    municipal-waste-permitting/mw-landfills-and-resource-recovery-facilities
+Sources:
+  1. PA DEP — Municipal Waste Landfills and Resource Recovery Facilities (HTML)
+       https://www.pa.gov/agencies/dep/programs-and-services/business/
+         municipal-waste-permitting/mw-landfills-and-resource-recovery-facilities
+       Tables: MW Landfills, C&D Landfills, Residual Waste Landfills, WTE
+       (~58 records, data_source = 'pa_dep_2025')
 
-  Four HTML tables on the page:
-    Table 0: Municipal Waste Landfills       → 'landfill'
-    Table 1: C&D Landfills                   → 'cd_facility'
-    Table 2: Residual Waste Landfills        → 'landfill'
-    Table 3: Resource Recovery / WTE         → 'waste_to_energy'
+  2. PA DEP — Solid Waste Facilities ArcGIS Hub CSV
+       https://opendata.arcgis.com/datasets/00c283da2e684df4a207ce75dd7d6994_0.csv
+       Filters: PRIMARY_FACILITY_STATUS=ACTIVE + SUB_FACILITY_TYPE=TRANSFER STATION
+       (~72 records, data_source = 'pa_dep_transfer_2025')
+       Coordinates are Web Mercator (EPSG:3857) → converted to WGS84.
 
-  Note: PA DEP does not expose a public ArcGIS or open-data API for solid
-  waste facilities. This scraper is the only automated data source available.
-  Transfer stations and composting facilities are not listed publicly.
-
-Fields scraped: name, address, city, zip, county, permit_number, operator
+Run order in main():
+  1. scrape_pa_landfills_and_wte()  — insert new landfill/WTE records
+  2. enrich_pa_landfills()          — UPDATE existing records with volumes, municipality, contacts
+  3. import_pa_transfer_stations()  — insert new transfer station records
 
 Required env vars:
     SUPABASE_URL
     SUPABASE_SERVICE_ROLE_KEY
 """
 
+import csv
+import io
+import math
 import os
 import re
 import sys
@@ -43,8 +50,11 @@ PAGE_URL = (
     "https://www.pa.gov/agencies/dep/programs-and-services/business"
     "/municipal-waste-permitting/mw-landfills-and-resource-recovery-facilities"
 )
-SAFE_MAX   = 200
-BATCH_SIZE = 50
+CSV_URL = "https://opendata.arcgis.com/datasets/00c283da2e684df4a207ce75dd7d6994_0.csv"
+
+SAFE_MAX          = 200   # landfill/WTE scraper guard
+TRANSFER_SAFE_MAX = 200   # transfer station CSV guard
+BATCH_SIZE        = 50
 
 # Maps preceding <p> text → facility type
 PA_SECTION_TYPE: dict[str, str] = {
@@ -55,7 +65,7 @@ PA_SECTION_TYPE: dict[str, str] = {
 }
 
 # ---------------------------------------------------------------------------
-# Parsing helpers
+# Parsing helpers (shared)
 # ---------------------------------------------------------------------------
 
 def parse_name_address(text: str) -> tuple[str, str | None, str | None, str | None]:
@@ -144,6 +154,21 @@ def determine_table_type(table) -> str:
     return PA_SECTION_TYPE.get(last_p, "landfill")
 
 
+def slugify(text: str) -> str:
+    text = text.lower().strip()
+    text = re.sub(r"[^a-z0-9\s]", "", text)
+    text = re.sub(r"\s+", "-", text.strip())
+    return text[:100]
+
+
+def make_slug(name: str, city: str = "") -> str:
+    return slugify(f"{name} {city}".strip())
+
+
+# ---------------------------------------------------------------------------
+# Step 1 — Scrape landfill / WTE records (original logic, unchanged)
+# ---------------------------------------------------------------------------
+
 def scrape_facilities(html: str) -> list[dict]:
     soup   = BeautifulSoup(html, "html.parser")
     tables = soup.find_all("table")
@@ -209,18 +234,307 @@ def scrape_facilities(html: str) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
-# Slug helpers
+# Step 2 — Enrich existing PA records with volume / municipality / contacts
 # ---------------------------------------------------------------------------
 
-def slugify(text: str) -> str:
-    text = text.lower().strip()
-    text = re.sub(r"[^a-z0-9\s]", "", text)
-    text = re.sub(r"\s+", "-", text.strip())
-    return text[:100]
+def scrape_pa_enriched(html: str) -> list[dict]:
+    """
+    Re-parse the PA DEP page to extract the richer fields not captured by the
+    basic scraper: ADV, MDV, municipality (cell[4]), and full contact text.
+
+    The table structure pairs a 6-cell facility row with an optional following
+    1-cell 'mdv: X,XXX' row.  Returns a list of dicts keyed on permit_number.
+    """
+    soup   = BeautifulSoup(html, "html.parser")
+    tables = soup.find_all("table")
+    enriched: list[dict] = []
+
+    for table in tables:
+        rows          = table.find_all("tr")
+        prev_facility = None   # last valid 6-cell facility dict
+
+        for row in rows:
+            cells = [td.get_text(" ", strip=True) for td in row.find_all(["th", "td"])]
+            if not cells:
+                continue
+
+            name_cell = cells[0].strip()
+
+            # MDV continuation row  (1 cell, starts with "mdv:")
+            if len(cells) == 1 and name_cell.lower().startswith("mdv:"):
+                if prev_facility is not None:
+                    mdv_raw = re.search(r"[\d,]+", name_cell[4:])
+                    if mdv_raw:
+                        try:
+                            prev_facility["mdv_tpd"] = float(mdv_raw.group(0).replace(",", ""))
+                        except ValueError:
+                            pass
+                continue
+
+            # Reset pairing on any other single-cell or malformed row
+            if len(cells) < 2:
+                prev_facility = None
+                continue
+
+            # Skip header / region rows
+            if name_cell.lower().startswith(("landfill", "facility")):
+                prev_facility = None
+                continue
+            if not name_cell or name_cell.lower().startswith("adv:"):
+                prev_facility = None
+                continue
+            if not cells[1].strip():
+                prev_facility = None
+                continue
+
+            # --- Valid 6-cell facility row ---
+            permit = cells[1].strip() or None
+
+            # ADV from cell[2]: "adv: 1,234" or bare "1,234"
+            adv_tpd = None
+            if len(cells) > 2:
+                adv_match = re.search(r"[\d,]+", cells[2])
+                if adv_match:
+                    try:
+                        adv_tpd = float(adv_match.group(0).replace(",", ""))
+                    except ValueError:
+                        pass
+
+            county       = cells[3].strip().title() if len(cells) > 3 else None
+            municipality = cells[4].strip().title() if len(cells) > 4 else None
+            contact_raw  = re.sub(r"\s+", " ", (cells[5] if len(cells) > 5 else "").strip())
+            operator, phone, email = parse_contact(contact_raw)
+
+            fac = {
+                "permit_number": permit,
+                "adv_tpd":       adv_tpd,
+                "mdv_tpd":       None,   # filled in when mdv row follows
+                "county":        county,
+                "municipality":  municipality,
+                "operator_name": operator,
+                "phone":         phone,
+                "email":         email,
+                "contact_raw":   contact_raw,
+            }
+            prev_facility = fac
+            enriched.append(fac)
+
+    return enriched
 
 
-def make_slug(name: str, city: str = "") -> str:
-    return slugify(f"{name} {city}".strip())
+def enrich_pa_landfills(supabase: Client, html: str) -> int:
+    """
+    Update existing PA records (data_source='pa_dep_2025') with richer data:
+      - permitted_capacity_tons_per_day  (from ADV)
+      - notes  (County | Municipality | ADV | MDV | Contact)
+      - operator_name, phone, email
+    Matches are made by permit_number.
+    """
+    enriched = scrape_pa_enriched(html)
+
+    # Build lookup permit → enrichment dict
+    by_permit: dict[str, dict] = {}
+    for rec in enriched:
+        if rec["permit_number"]:
+            by_permit[rec["permit_number"]] = rec
+
+    print(f"\n  Enrichment records parsed: {len(by_permit)}")
+
+    # Fetch existing PA records
+    pa_records = (
+        supabase.table("disposal_facilities")
+        .select("id,permit_number")
+        .eq("state", "PA")
+        .execute()
+        .data or []
+    )
+    print(f"  Existing PA records in DB: {len(pa_records)}")
+
+    updated = 0
+    for rec in pa_records:
+        pn  = rec.get("permit_number") or ""
+        enr = by_permit.get(pn)
+        if not enr:
+            continue
+
+        # Build notes string
+        note_parts: list[str] = []
+        if enr.get("county"):
+            note_parts.append(f"County: {enr['county']}")
+        if enr.get("municipality"):
+            note_parts.append(f"Municipality: {enr['municipality']}")
+        if enr.get("adv_tpd") is not None:
+            note_parts.append(f"ADV: {enr['adv_tpd']:,.0f} tons/day")
+        if enr.get("mdv_tpd") is not None:
+            note_parts.append(f"MDV: {enr['mdv_tpd']:,.0f} tons/day")
+        if enr.get("contact_raw"):
+            note_parts.append(f"Contact: {enr['contact_raw']}")
+        notes = " | ".join(note_parts) or None
+
+        payload: dict = {"notes": notes}
+        if enr.get("adv_tpd") is not None:
+            payload["permitted_capacity_tons_per_day"] = enr["adv_tpd"]
+        if enr.get("operator_name"):
+            payload["operator_name"] = enr["operator_name"]
+        if enr.get("phone"):
+            payload["phone"] = enr["phone"]
+        if enr.get("email"):
+            payload["email"] = enr["email"]
+
+        supabase.table("disposal_facilities").update(payload).eq("id", rec["id"]).execute()
+        updated += 1
+
+    print(f"  PA records enriched: {updated}")
+    return updated
+
+
+# ---------------------------------------------------------------------------
+# Step 3 — Import PA transfer stations from ArcGIS Hub CSV
+# ---------------------------------------------------------------------------
+
+def merc_to_wgs84(x: float, y: float) -> tuple[float, float]:
+    """Convert Web Mercator (EPSG:3857) X/Y to WGS84 lat/lng."""
+    lng = x / 20037508.34 * 180.0
+    lat = math.degrees(2.0 * math.atan(math.exp(y / 20037508.34 * math.pi)) - math.pi / 2.0)
+    return round(lat, 6), round(lng, 6)
+
+
+def clean_site_name(raw: str) -> str:
+    """Expand abbreviations and title-case PA transfer station names."""
+    name = raw.strip()
+    # Expand known abbreviations
+    name = re.sub(r"\bTRANSF\s+STA\b", "Transfer Station", name, flags=re.IGNORECASE)
+    name = re.sub(r"\bTRANSF\b",       "Transfer",          name, flags=re.IGNORECASE)
+    name = re.sub(r"\bSTA\b",          "Station",           name, flags=re.IGNORECASE)
+    name = re.sub(r"\bREC\b",          "Recycling",         name, flags=re.IGNORECASE)
+    name = re.sub(r"\bMUNI\b",         "Municipal",         name, flags=re.IGNORECASE)
+    return re.sub(r"\s{2,}", " ", name).strip().title()
+
+
+def import_pa_transfer_stations(
+    supabase: Client,
+    existing_slugs: set[str],
+) -> tuple[int, int]:
+    """
+    Download the PA DEP Solid Waste Facilities CSV, filter to active transfer
+    stations, convert coordinates, and insert new records.
+    Returns (inserted, error_count).
+    """
+    print("\nFetching PA transfer station CSV ...")
+    try:
+        resp = requests.get(CSV_URL, headers=HEADERS, timeout=60)
+        resp.raise_for_status()
+    except Exception as exc:
+        print(f"  [ERR] CSV fetch failed: {exc}")
+        return 0, 1
+
+    print(f"  CSV fetched: {len(resp.content):,} bytes")
+
+    # utf-8-sig automatically strips the UTF-8 BOM from the first column header
+    text   = resp.content.decode("utf-8-sig")
+    reader = csv.DictReader(io.StringIO(text))
+
+    records: list[dict] = []
+    for row in reader:
+        status   = (row.get("PRIMARY_FACILITY_STATUS") or "").strip().upper()
+        sub_type = (row.get("SUB_FACILITY_TYPE") or "").strip().upper()
+
+        if status != "ACTIVE":
+            continue
+        if sub_type != "TRANSFER STATION":
+            continue
+
+        site_name = (row.get("SITE_NAME") or "").strip()
+        if not site_name:
+            continue
+
+        name = clean_site_name(site_name)
+
+        # Coordinates: Web Mercator → WGS84
+        lat: float | None = None
+        lng: float | None = None
+        try:
+            x_val = row.get("X") or ""
+            y_val = row.get("Y") or ""
+            if x_val and y_val:
+                x = float(x_val)
+                y = float(y_val)
+                if x != 0 and y != 0:
+                    lat, lng = merc_to_wgs84(x, y)
+        except (ValueError, TypeError):
+            pass
+
+        permit   = (row.get("OTHER_FACILITY_ID") or "").strip() or None
+        operator = (row.get("ORGANIZATION_NAME") or "").strip().title() or None
+        county   = (row.get("COUNTY_NAME") or "").strip().title() or None
+        address  = (row.get("LOCATION_ADDRESS") or "").strip().title() or None
+        city     = (row.get("MUNICIPALITY_NAME") or "").strip().title() or None
+
+        records.append({
+            "name":                name,
+            "facility_type":       "transfer_station",
+            "address":             address,
+            "city":                city,
+            "state":               "PA",
+            "operator_name":       operator,
+            "permit_number":       permit,
+            "permit_status":       "active",
+            "lat":                 lat,
+            "lng":                 lng,
+            "notes":               f"County: {county}" if county else None,
+            "service_area_states": ["PA"],
+            "data_source":         "pa_dep_transfer_2025",
+            "accepts_msw":         True,
+            "verified":            True,
+            "active":              True,
+        })
+
+    print(f"  Active transfer stations parsed: {len(records)}")
+
+    if len(records) > TRANSFER_SAFE_MAX:
+        print(f"  [ERR] TRANSFER_SAFE_MAX exceeded ({len(records)} > {TRANSFER_SAFE_MAX}). Aborting.")
+        return 0, 1
+
+    # Dedup against existing slugs
+    slug_counter: dict[str, int] = {}
+    to_insert: list[dict] = []
+    skipped = 0
+
+    for rec in records:
+        base_slug = make_slug(rec["name"], rec.get("city") or "")
+        if not base_slug:
+            continue
+        if base_slug in existing_slugs:
+            skipped += 1
+            continue
+        n    = slug_counter.get(base_slug, 0)
+        slug = base_slug if n == 0 else f"{base_slug}-{n}"
+        while slug in existing_slugs:
+            n += 1
+            slug = f"{base_slug}-{n}"
+        slug_counter[base_slug] = n + 1
+        existing_slugs.add(slug)
+        row_data = dict(rec)
+        row_data["slug"] = slug
+        to_insert.append(row_data)
+
+    print(f"  Transfer stations skipped (already in DB): {skipped}")
+    print(f"  Transfer stations to insert: {len(to_insert)}")
+
+    inserted = 0
+    errors   = 0
+    for i in range(0, len(to_insert), BATCH_SIZE):
+        batch     = to_insert[i : i + BATCH_SIZE]
+        batch_num = i // BATCH_SIZE + 1
+        try:
+            supabase.table("disposal_facilities").insert(batch).execute()
+            inserted += len(batch)
+            print(f"  [OK] Batch {batch_num}: inserted {len(batch)}")
+        except Exception as exc:
+            print(f"  [ERR] Batch {batch_num}: {exc}")
+            errors += 1
+
+    return inserted, errors
 
 
 # ---------------------------------------------------------------------------
@@ -241,6 +555,7 @@ def main() -> None:
 
     supabase: Client = create_client(supabase_url, service_role_key)
 
+    # ── Load existing slugs ───────────────────────────────────────────────────
     print("\nLoading existing slugs ...")
     existing_slugs: set[str] = set()
     offset = 0
@@ -254,6 +569,7 @@ def main() -> None:
         offset += 1000
     print(f"Existing facilities in DB: {len(existing_slugs)}")
 
+    # ── Fetch PA DEP page (used by both Step 1 and Step 2) ───────────────────
     print(f"\nFetching PA DEP facility page ...")
     try:
         r = requests.get(PAGE_URL, headers=HEADERS, timeout=30)
@@ -263,6 +579,8 @@ def main() -> None:
         sys.exit(1)
     print(f"Page fetched: {len(r.content):,} bytes")
 
+    # ── Step 1: Scrape landfills + WTE, insert new records ───────────────────
+    print("\n-- Step 1: Landfill / WTE scrape --")
     records = scrape_facilities(r.text)
     print(f"Scraped records: {len(records)}")
 
@@ -290,32 +608,43 @@ def main() -> None:
         row = dict(rec); row["slug"] = slug
         to_insert.append(row)
 
-    print(f"\nAlready in DB (skipped): {skipped}")
-    print(f"To insert: {len(to_insert)}")
+    print(f"  Already in DB (skipped): {skipped}")
+    print(f"  To insert: {len(to_insert)}")
 
-    inserted = 0
-    errors   = 0
+    landfill_inserted = 0
+    landfill_errors   = 0
     for i in range(0, len(to_insert), BATCH_SIZE):
         batch     = to_insert[i : i + BATCH_SIZE]
         batch_num = i // BATCH_SIZE + 1
         try:
             supabase.table("disposal_facilities").insert(batch).execute()
-            inserted += len(batch)
+            landfill_inserted += len(batch)
             print(f"  [OK] Batch {batch_num}: inserted {len(batch)}")
         except Exception as exc:
             print(f"  [ERR] Batch {batch_num}: {exc}")
-            errors += 1
+            landfill_errors += 1
 
+    # ── Step 2: Enrich existing PA records with volume / municipality / contacts
+    print("\n-- Step 2: Enrich existing PA records --")
+    enrich_pa_landfills(supabase, r.text)
+
+    # ── Step 3: Import PA transfer stations from CSV ──────────────────────────
+    print("\n-- Step 3: PA transfer stations (CSV) --")
+    ts_inserted, ts_errors = import_pa_transfer_stations(supabase, existing_slugs)
+
+    # ── Summary ───────────────────────────────────────────────────────────────
     print()
     print("=" * 60)
     print("SUMMARY")
     print("=" * 60)
-    print(f"  Scraped:  {len(records)}")
-    print(f"  Skipped:  {skipped}")
-    print(f"  Inserted: {inserted}")
-    print(f"  Errors:   {errors}")
+    print(f"  Landfill/WTE scraped:    {len(records)}")
+    print(f"  Landfill/WTE skipped:    {skipped}")
+    print(f"  Landfill/WTE inserted:   {landfill_inserted}")
+    print(f"  Landfill/WTE errors:     {landfill_errors}")
+    print(f"  Transfer stations ins.:  {ts_inserted}")
+    print(f"  Transfer stations errs:  {ts_errors}")
 
-    if errors:
+    if landfill_errors or ts_errors:
         sys.exit(1)
 
 

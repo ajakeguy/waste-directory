@@ -9,7 +9,7 @@ Source: NH DES Core GIS Datasets — Solid Waste Facility Locations
   ~684 total facilities; filters to OPERATING status only (~200 records)
 
 Fields: SWF_TYPE, SWF_STATUS, SWF_PERMIT, SWF_NAME, SWF_ADD_1, SWF_ADD_2,
-        SWF_CITY, SWF_LAT, SWF_LONG
+        SWF_CITY, SWF_LAT, SWF_LONG, ONESTOP_LINK
 
 Required env vars:
     SUPABASE_URL
@@ -122,11 +122,9 @@ def map_facility(attrs: dict) -> dict | None:
     accepts_recycling = facility_type in ("mrf", "recycling_center")
     accepts_organics  = facility_type == "composting"
 
-    # NH DES OneStop profile URL (rn = registry number = permit number)
-    website = (
-        f"https://www4.des.nh.gov/OneStop/registry/Registry.aspx?rn={permit}"
-        if permit else None
-    )
+    # NH DES OneStop direct facility URL — from ONESTOP_LINK field in ArcGIS data
+    # Format: http://www4.des.state.nh.us/DESOneStop/SWFDetail.aspx?ID=XXXXXXX
+    website = (attrs.get("ONESTOP_LINK") or "").strip() or None
 
     return {
         "name":          name,
@@ -197,7 +195,27 @@ def main() -> None:
         print(f"[ERR] SAFE_MAX exceeded ({len(records)} > {SAFE_MAX}). Aborting.")
         sys.exit(1)
 
-    # Dedup + insert
+    # Update website URLs for existing NH records using ONESTOP_LINK
+    print("\nUpdating OneStop URLs for existing NH records ...")
+    permit_to_url: dict[str, str] = {}
+    for f in raw:
+        attrs = f["attributes"]
+        permit = (attrs.get("SWF_PERMIT") or "").strip()
+        link   = (attrs.get("ONESTOP_LINK") or "").strip()
+        if permit and link:
+            permit_to_url[permit] = link
+
+    updated_links = 0
+    nh_existing = supabase.table("disposal_facilities").select("id,permit_number,website").eq("state","NH").execute().data or []
+    for rec in nh_existing:
+        pn  = rec.get("permit_number") or ""
+        url = permit_to_url.get(pn)
+        if url and rec.get("website") != url:
+            supabase.table("disposal_facilities").update({"website": url}).eq("id", rec["id"]).execute()
+            updated_links += 1
+    print(f"Updated OneStop URLs: {updated_links}")
+
+    # Dedup + insert new records
     slug_counter: dict[str, int] = {}
     to_insert = []
     skipped   = 0
@@ -242,6 +260,7 @@ def main() -> None:
     print(f"  Mapped:   {len(records)}")
     print(f"  Skipped:  {skipped}")
     print(f"  Inserted: {inserted}")
+    print(f"  URL fixes:{updated_links}")
     print(f"  Errors:   {errors}")
 
     if errors:
