@@ -401,14 +401,47 @@ def merc_to_wgs84(x: float, y: float) -> tuple[float, float]:
 
 def clean_site_name(raw: str) -> str:
     """Expand abbreviations and title-case PA transfer station names."""
-    name = raw.strip()
-    # Expand known abbreviations
-    name = re.sub(r"\bTRANSF\s+STA\b", "Transfer Station", name, flags=re.IGNORECASE)
-    name = re.sub(r"\bTRANSF\b",       "Transfer",          name, flags=re.IGNORECASE)
-    name = re.sub(r"\bSTA\b",          "Station",           name, flags=re.IGNORECASE)
-    name = re.sub(r"\bREC\b",          "Recycling",         name, flags=re.IGNORECASE)
-    name = re.sub(r"\bMUNI\b",         "Municipal",         name, flags=re.IGNORECASE)
-    return re.sub(r"\s{2,}", " ", name).strip().title()
+    # Title-case first so replacements are case-consistent
+    name = raw.strip().title()
+    # Ordered replacements — longer/more-specific patterns first
+    replacements = [
+        ("Transf Sta",      "Transfer Station"),
+        ("Transf Station",  "Transfer Station"),
+        ("Transf &",        "Transfer &"),
+        ("Transf",          "Transfer"),
+        ("Recyl",           "Recycling"),
+        ("Rec Ctr",         "Recycling Center"),
+        ("Ctr",             "Center"),
+        ("Mfg",             "Manufacturing"),
+        # "Sta " with trailing space avoids matching "Station"
+        ("Sta ",            "Station "),
+        ("Muni ",           "Municipal "),
+    ]
+    for abbrev, full in replacements:
+        name = name.replace(abbrev, full)
+    return re.sub(r"\s{2,}", " ", name).strip()
+
+
+def best_ts_name(site_name: str, primary_name: str) -> str:
+    """
+    Return the more readable of SITE_NAME or PRIMARY_FACILITY_NAME.
+    Prefer PRIMARY_FACILITY_NAME if it's non-empty and not heavily abbreviated
+    (heuristic: already contains mixed case or fewer all-caps words than SITE_NAME).
+    Both are cleaned before comparison; the cleaner result is returned.
+    """
+    cleaned_site    = clean_site_name(site_name)    if site_name    else ""
+    cleaned_primary = clean_site_name(primary_name) if primary_name else ""
+
+    if not cleaned_primary:
+        return cleaned_site
+    if not cleaned_site:
+        return cleaned_primary
+
+    # Count residual all-caps tokens (≥3 chars) as proxy for "still abbreviated"
+    def abbrev_score(s: str) -> int:
+        return sum(1 for w in s.split() if len(w) >= 3 and w.isupper())
+
+    return cleaned_primary if abbrev_score(cleaned_primary) <= abbrev_score(cleaned_site) else cleaned_site
 
 
 def import_pa_transfer_stations(
@@ -444,11 +477,12 @@ def import_pa_transfer_stations(
         if sub_type != "TRANSFER STATION":
             continue
 
-        site_name = (row.get("SITE_NAME") or "").strip()
-        if not site_name:
+        site_name    = (row.get("SITE_NAME") or "").strip()
+        primary_name = (row.get("PRIMARY_FACILITY_NAME") or "").strip()
+        if not site_name and not primary_name:
             continue
 
-        name = clean_site_name(site_name)
+        name = best_ts_name(site_name, primary_name)
 
         # Coordinates: Web Mercator → WGS84
         lat: float | None = None
