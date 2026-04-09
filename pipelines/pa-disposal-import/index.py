@@ -400,25 +400,41 @@ def merc_to_wgs84(x: float, y: float) -> tuple[float, float]:
 
 
 def clean_site_name(raw: str) -> str:
-    """Expand abbreviations and title-case PA transfer station names."""
-    # Title-case first so replacements are case-consistent
-    name = raw.strip().title()
-    # Ordered replacements — longer/more-specific patterns first
+    """
+    Expand abbreviations on the raw ALL-CAPS string first, then title-case.
+    Operating on all-caps avoids partial-match bugs that arise after title().
+    """
+    name = raw.strip().upper()
+    # Ordered longest-match first so 'TRANSF STA' won't be split by 'TRANSF'
     replacements = [
-        ("Transf Sta",      "Transfer Station"),
-        ("Transf Station",  "Transfer Station"),
-        ("Transf &",        "Transfer &"),
-        ("Transf",          "Transfer"),
-        ("Recyl",           "Recycling"),
-        ("Rec Ctr",         "Recycling Center"),
-        ("Ctr",             "Center"),
-        ("Mfg",             "Manufacturing"),
-        # "Sta " with trailing space avoids matching "Station"
-        ("Sta ",            "Station "),
-        ("Muni ",           "Municipal "),
+        ("TRANSF STA",  "TRANSFER STATION"),
+        ("TRANS STA",   "TRANSFER STATION"),
+        ("TRANSF &",    "TRANSFER &"),
+        ("TRANSF,",     "TRANSFER,"),
+        ("TRANSF ",     "TRANSFER "),
+        ("REC CTR",     "RECYCLING CENTER"),
+        ("RECYL",       "RECYCLING"),
+        ("RECYCL ",     "RECYCLING "),
+        (" CTR",        " CENTER"),
+        (" STA ",       " STATION "),
+        (" MFG",        " MANUFACTURING"),
+        (" MUNI ",      " MUNICIPAL "),
+        ("FRMLY",       "FORMERLY"),
     ]
     for abbrev, full in replacements:
         name = name.replace(abbrev, full)
+    # Handle trailing STA (end of string, no trailing space)
+    if name.endswith(" STA"):
+        name = name[:-4] + " STATION"
+
+    # Title-case
+    name = name.title()
+
+    # Fix ordinal suffixes: 58Th → 58th, 1St → 1st, etc.
+    name = re.sub(r"(\d+)(St|Nd|Rd|Th)\b",
+                  lambda m: m.group(1) + m.group(2).lower(),
+                  name)
+
     return re.sub(r"\s{2,}", " ", name).strip()
 
 
