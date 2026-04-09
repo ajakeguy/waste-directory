@@ -9,7 +9,6 @@ const states = [
     slug: "connecticut",
     abbr: "CT",
     description: "Serving the Constitution State",
-    comingSoon: true,
   },
   {
     name: "Maine",
