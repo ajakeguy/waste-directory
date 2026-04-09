@@ -3,15 +3,20 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { MapPin, Phone, CheckCircle } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
-import { getDisposalFacilitiesPaginated } from "@/lib/data/disposal";
+import {
+  getDisposalFacilitiesPaginated,
+  getDisposalFacilitiesForMap,
+} from "@/lib/data/disposal";
+import { createClient } from "@/lib/supabase/server";
 import { Pagination } from "@/components/directory/Pagination";
 import { SearchBar } from "@/components/directory/SearchBar";
+import { DisposalSaveButton } from "@/components/disposal/DisposalSaveButton";
+import { DisposalMap } from "@/components/disposal/DisposalMap";
+import type { MapFacility } from "@/components/disposal/DisposalMap";
 import {
   FACILITY_TYPE_LABELS,
   FACILITY_TYPE_COLORS,
   FACILITY_TYPES,
-  STATE_SLUG_TO_CODE,
-  STATE_SLUG_TO_NAME,
 } from "@/types";
 import type { FacilityType } from "@/types";
 
@@ -21,7 +26,15 @@ export const metadata: Metadata = {
     "Find landfills, transfer stations, MRFs, composting facilities, and waste-to-energy plants across the Northeast.",
 };
 
-const PAGE_SIZE = 25;
+const VALID_PAGE_SIZES = [25, 50, 100] as const;
+type PageSize = (typeof VALID_PAGE_SIZES)[number];
+
+function parsePageSize(raw: string | undefined): PageSize {
+  const n = parseInt(raw ?? "25", 10);
+  return (VALID_PAGE_SIZES as readonly number[]).includes(n)
+    ? (n as PageSize)
+    : 25;
+}
 
 type SearchParams = Promise<{
   state?: string;
@@ -29,6 +42,7 @@ type SearchParams = Promise<{
   active?: string;
   q?: string;
   page?: string;
+  per_page?: string;
 }>;
 
 // ── Sidebar options ───────────────────────────────────────────────────────────
@@ -72,18 +86,35 @@ async function DisposalResults({
   active_only,
   q,
   page,
+  pageSize,
 }: {
   state?: string;
   facility_type?: string;
   active_only: boolean;
   q?: string;
   page: number;
+  pageSize: PageSize;
 }) {
   const { data: facilities, count: total } = await getDisposalFacilitiesPaginated(
     { state, facility_type, active_only, q },
     page,
-    PAGE_SIZE
+    pageSize
   );
+
+  // Check auth + saved IDs for save buttons
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  let savedIds = new Set<string>();
+  if (user) {
+    const { data: savedRows } = await supabase
+      .from("saved_disposal_facilities")
+      .select("facility_id")
+      .eq("user_id", user.id);
+    savedIds = new Set((savedRows ?? []).map((r) => r.facility_id));
+  }
 
   if (total === 0) {
     return (
@@ -94,8 +125,8 @@ async function DisposalResults({
     );
   }
 
-  const from = (page - 1) * PAGE_SIZE + 1;
-  const to   = Math.min(page * PAGE_SIZE, total);
+  const from = (page - 1) * pageSize + 1;
+  const to   = Math.min(page * pageSize, total);
 
   return (
     <div className="space-y-3">
@@ -152,12 +183,20 @@ async function DisposalResults({
                   )}
                 </div>
               </div>
+
+              {user && (
+                <DisposalSaveButton
+                  facilityId={f.id}
+                  initialSaved={savedIds.has(f.id)}
+                  size="sm"
+                />
+              )}
             </div>
           </Link>
         );
       })}
 
-      <Pagination page={page} pageSize={PAGE_SIZE} total={total} />
+      <Pagination page={page} pageSize={pageSize} total={total} />
     </div>
   );
 }
@@ -169,25 +208,29 @@ function FilterSidebar({
   selectedType,
   activeOnly,
   q,
+  perPage,
 }: {
   selectedState?: string;
   selectedType?: string;
   activeOnly: boolean;
   q?: string;
+  perPage: PageSize;
 }) {
   function buildUrl(overrides: Record<string, string | undefined>) {
     const params = new URLSearchParams();
-    const merged = {
-      state:  selectedState,
-      type:   selectedType,
-      active: activeOnly ? "1" : "0",
+    const merged: Record<string, string | undefined> = {
+      state:    selectedState,
+      type:     selectedType,
+      active:   activeOnly ? "1" : "0",
       q,
-      page:   "1",
+      per_page: perPage !== 25 ? String(perPage) : undefined,
+      page:     "1",
       ...overrides,
     };
     for (const [k, v] of Object.entries(merged)) {
-      if (v && v !== "1") params.set(k, v);          // omit defaults
-      else if (v === "1" && k === "active") {/* skip — active=1 is default */}
+      if (!v) continue;
+      if (k === "active" && v === "1") continue; // active=1 is default, omit
+      params.set(k, v);
     }
     const qs = params.toString();
     return `/disposal${qs ? `?${qs}` : ""}`;
@@ -287,6 +330,28 @@ function FilterSidebar({
           </Link>
         </div>
       </div>
+
+      {/* Per-page */}
+      <div>
+        <h3 className="text-xs font-semibold uppercase tracking-wider text-gray-500 mb-2">
+          Per page
+        </h3>
+        <div className="flex gap-1">
+          {VALID_PAGE_SIZES.map((n) => (
+            <Link
+              key={n}
+              href={buildUrl({ per_page: n !== 25 ? String(n) : undefined, page: "1" })}
+              className={`flex-1 text-center text-sm px-2 py-1.5 rounded-lg transition-colors ${
+                perPage === n
+                  ? "bg-[#2D6A4F]/10 text-[#2D6A4F] font-medium"
+                  : "text-gray-600 hover:bg-gray-50"
+              }`}
+            >
+              {n}
+            </Link>
+          ))}
+        </div>
+      </div>
     </aside>
   );
 }
@@ -304,6 +369,12 @@ export default async function DisposalPage({
   const active_only   = params.active !== "0";
   const q             = params.q || undefined;
   const page          = Math.max(1, parseInt(params.page ?? "1", 10) || 1);
+  const pageSize      = parsePageSize(params.per_page);
+
+  const filters = { state, facility_type, active_only, q };
+
+  // Fetch facilities for map (server-side, passed as props to client component)
+  const mapFacilities = await getDisposalFacilitiesForMap(filters);
 
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
@@ -320,9 +391,14 @@ export default async function DisposalPage({
         <Suspense fallback={
           <div className="w-full h-[42px] rounded-lg border border-gray-200 bg-gray-50 animate-pulse" />
         }>
-          <SearchBar />
+          <SearchBar placeholder="Search facilities by name..." />
         </Suspense>
       </div>
+
+      {/* Map */}
+      {mapFacilities.length > 0 && (
+        <DisposalMap facilities={mapFacilities as MapFacility[]} />
+      )}
 
       <div className="flex flex-col md:flex-row gap-4 md:gap-6 md:items-start">
         <FilterSidebar
@@ -330,6 +406,7 @@ export default async function DisposalPage({
           selectedType={facility_type}
           activeOnly={active_only}
           q={q}
+          perPage={pageSize}
         />
 
         <div className="flex-1 min-w-0">
@@ -340,6 +417,7 @@ export default async function DisposalPage({
               active_only={active_only}
               q={q}
               page={page}
+              pageSize={pageSize}
             />
           </Suspense>
         </div>

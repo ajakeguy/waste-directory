@@ -53,7 +53,7 @@ export function MobileNav({
         <div className="absolute top-full left-0 right-0 z-40 bg-[#2D6A4F] border-t border-white/10 shadow-lg">
           <nav className="max-w-7xl mx-auto px-4 py-3 space-y-0.5">
             <NavLink href="/directory" onClose={() => setOpen(false)}>
-              Directory
+              Haulers
             </NavLink>
             <NavLink href="/disposal" onClose={() => setOpen(false)}>
               Disposal

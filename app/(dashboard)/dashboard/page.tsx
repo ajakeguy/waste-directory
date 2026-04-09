@@ -2,7 +2,7 @@ import { redirect } from "next/navigation";
 import type { Metadata } from "next";
 import { createClient } from "@/lib/supabase/server";
 import { DashboardClient } from "@/components/dashboard/DashboardClient";
-import type { Organization, SavedItemWithOrg, UserList, EquipmentListing, DiversionReport, SavedRoute } from "@/types";
+import type { Organization, SavedItemWithOrg, UserList, EquipmentListing, DiversionReport, SavedRoute, DisposalFacility } from "@/types";
 
 export const metadata: Metadata = {
   title: "Dashboard | WasteDirectory",
@@ -114,6 +114,23 @@ export default async function DashboardPage() {
     "id" | "route_name" | "stops" | "total_distance_km" | "status" | "updated_at"
   >[];
 
+  // Saved disposal facilities (latest 20)
+  type SavedFacilityRow = {
+    facility_id: string;
+    facility: Pick<DisposalFacility, "id" | "name" | "slug" | "facility_type" | "city" | "state"> | null;
+  };
+
+  const { data: savedDisposalRows } = await supabase
+    .from("saved_disposal_facilities")
+    .select("facility_id, disposal_facilities(id, name, slug, facility_type, city, state)")
+    .eq("user_id", user.id)
+    .order("created_at", { ascending: false })
+    .limit(20);
+
+  const savedFacilities = ((savedDisposalRows ?? []) as unknown as SavedFacilityRow[])
+    .filter((r) => r.facility !== null)
+    .map((r) => r.facility!);
+
   return (
     <DashboardClient
       userId={user.id}
@@ -123,6 +140,7 @@ export default async function DashboardPage() {
       myListings={myListings}
       recentReports={recentReports}
       recentRoutes={recentRoutes}
+      savedFacilities={savedFacilities}
     />
   );
 }

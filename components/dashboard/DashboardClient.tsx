@@ -15,6 +15,7 @@ import {
   Trash2,
   FileText,
   Route,
+  Building2,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -27,7 +28,7 @@ import {
 import { OrganizationCard } from "@/components/directory/OrganizationCard";
 import { NewListModal } from "@/components/dashboard/NewListModal";
 import { MyListings } from "@/components/dashboard/MyListings";
-import type { UserList, SavedItemWithOrg, EquipmentListing, DiversionReport, SavedRoute } from "@/types";
+import type { UserList, SavedItemWithOrg, EquipmentListing, DiversionReport, SavedRoute, DisposalFacility } from "@/types";
 
 // ── Color presets (shared with NewListModal) ──────────────────────────────────
 
@@ -52,6 +53,11 @@ type RecentRoute = Pick<
   "id" | "route_name" | "stops" | "total_distance_km" | "status" | "updated_at"
 >;
 
+type SavedFacility = Pick<
+  DisposalFacility,
+  "id" | "name" | "slug" | "facility_type" | "city" | "state"
+>;
+
 type Props = {
   userId: string;
   displayName: string;
@@ -60,6 +66,7 @@ type Props = {
   myListings: EquipmentListing[];
   recentReports: RecentReport[];
   recentRoutes: RecentRoute[];
+  savedFacilities: SavedFacility[];
 };
 
 // ── Main client component ─────────────────────────────────────────────────────
@@ -72,6 +79,7 @@ export function DashboardClient({
   myListings,
   recentReports,
   recentRoutes,
+  savedFacilities,
 }: Props) {
   const [lists, setLists] = useState<UserList[]>(initialLists);
   const [activeListId, setActiveListId] = useState<string | "all">("all");
@@ -469,6 +477,61 @@ export function DashboardClient({
                 View all routes →
               </Link>
             </div>
+          </div>
+        )}
+      </div>
+
+      {/* Saved Disposal Facilities */}
+      <div className="max-w-6xl mx-auto px-4 sm:px-6 pb-10">
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="font-semibold text-gray-900 flex items-center gap-2">
+            <Building2 className="size-4 text-[#2D6A4F]" />
+            Saved Facilities
+          </h2>
+          <Link
+            href="/disposal"
+            className="text-sm text-[#2D6A4F] hover:underline"
+          >
+            Browse facilities →
+          </Link>
+        </div>
+
+        {savedFacilities.length === 0 ? (
+          <div className="rounded-xl border border-dashed border-gray-200 py-10 text-center px-4">
+            <div className="w-10 h-10 rounded-full bg-gray-100 flex items-center justify-center mx-auto mb-3">
+              <Building2 className="size-4 text-gray-400" />
+            </div>
+            <p className="font-medium text-gray-700 mb-1">No saved facilities yet</p>
+            <p className="text-sm text-gray-500 mb-4">
+              Browse the disposal directory and click the{" "}
+              <span className="text-rose-400">♥</span> on any facility to save it here
+            </p>
+            <Link
+              href="/disposal"
+              className="inline-flex h-9 items-center px-5 rounded-lg bg-[#2D6A4F] text-white text-sm font-medium hover:bg-[#245a42] transition-colors"
+            >
+              Browse facilities
+            </Link>
+          </div>
+        ) : (
+          <div className="space-y-2">
+            {savedFacilities.map((f) => (
+              <Link
+                key={f.id}
+                href={`/disposal/${f.slug}`}
+                className="flex items-center justify-between gap-4 rounded-xl border border-gray-200 bg-white px-4 py-3 hover:border-[#2D6A4F]/40 hover:shadow-sm transition-all"
+              >
+                <div className="min-w-0">
+                  <p className="font-medium text-gray-900 truncate">{f.name}</p>
+                  <p className="text-sm text-gray-500 truncate">
+                    {[f.city, f.state].filter(Boolean).join(", ")}
+                  </p>
+                </div>
+                <span className="shrink-0 text-xs px-2 py-0.5 rounded-full font-medium bg-[#2D6A4F]/10 text-[#2D6A4F] capitalize">
+                  {f.facility_type.replace(/_/g, " ")}
+                </span>
+              </Link>
+            ))}
           </div>
         )}
       </div>

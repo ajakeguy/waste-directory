@@ -111,18 +111,10 @@ export default async function HomePage() {
               <Link
                 key={state.slug}
                 href={`/haulers/${state.slug}`}
-                className={`group bg-white rounded-xl border border-gray-200 p-6 flex flex-col items-center text-center transition-all ${
-                  state.comingSoon
-                    ? "opacity-75 hover:opacity-90"
-                    : "hover:border-[#2D6A4F] hover:shadow-md"
-                }`}
+                className="group bg-white rounded-xl border border-gray-200 p-6 flex flex-col items-center text-center transition-all hover:border-[#2D6A4F] hover:shadow-md"
               >
-                <div className={`w-14 h-14 rounded-full flex items-center justify-center mb-4 transition-colors ${
-                  state.comingSoon
-                    ? "bg-gray-100"
-                    : "bg-[#2D6A4F]/10 group-hover:bg-[#2D6A4F]/20"
-                }`}>
-                  <MapPin className={`size-6 ${state.comingSoon ? "text-gray-400" : "text-[#2D6A4F]"}`} />
+                <div className="w-14 h-14 rounded-full flex items-center justify-center mb-4 transition-colors bg-[#2D6A4F]/10 group-hover:bg-[#2D6A4F]/20">
+                  <MapPin className="size-6 text-[#2D6A4F]" />
                 </div>
                 <span className="text-xs font-bold tracking-widest uppercase text-[#94A3B8] mb-1">
                   {state.abbr}
@@ -131,15 +123,9 @@ export default async function HomePage() {
                   {state.name}
                 </h3>
                 <p className="text-sm text-gray-500">{state.description}</p>
-                {state.comingSoon ? (
-                  <span className="mt-4 text-xs font-medium text-gray-400 bg-gray-100 px-2.5 py-1 rounded-full">
-                    Data coming soon
-                  </span>
-                ) : (
-                  <span className="mt-4 text-sm font-medium text-[#2D6A4F] group-hover:underline">
-                    View haulers →
-                  </span>
-                )}
+                <span className="mt-4 text-sm font-medium text-[#2D6A4F] group-hover:underline">
+                  View haulers →
+                </span>
               </Link>
             ))}
           </div>

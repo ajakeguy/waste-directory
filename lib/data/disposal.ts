@@ -81,6 +81,48 @@ export async function getDisposalFacilitiesPaginated(
   return { data: data ?? [], count: count ?? 0 };
 }
 
+export async function getDisposalFacilitiesForMap(
+  filters: DisposalFilters = {}
+): Promise<
+  Pick<
+    DisposalFacility,
+    "id" | "name" | "slug" | "city" | "state" | "facility_type" | "lat" | "lng" | "phone"
+  >[]
+> {
+  const supabase = await createClient();
+
+  let query = supabase
+    .from("disposal_facilities")
+    .select("id, name, slug, city, state, facility_type, lat, lng, phone")
+    .not("lat", "is", null)
+    .not("lng", "is", null)
+    .order("name")
+    .limit(500);
+
+  if (filters.active_only !== false) {
+    query = query.eq("active", true);
+  }
+  if (filters.state) {
+    query = query.contains("service_area_states", [filters.state]);
+  }
+  if (filters.facility_type) {
+    query = query.eq("facility_type", filters.facility_type);
+  }
+  if (filters.q) {
+    query = query.ilike("name", `%${filters.q}%`);
+  }
+
+  const { data, error } = await query;
+  if (error) {
+    console.error("Error fetching disposal facilities for map:", error);
+    return [];
+  }
+  return (data ?? []) as Pick<
+    DisposalFacility,
+    "id" | "name" | "slug" | "city" | "state" | "facility_type" | "lat" | "lng" | "phone"
+  >[];
+}
+
 export async function getDisposalFacilityBySlug(
   slug: string
 ): Promise<DisposalFacility | null> {

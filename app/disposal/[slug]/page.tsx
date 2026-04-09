@@ -13,6 +13,8 @@ import {
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { getDisposalFacilityBySlug } from "@/lib/data/disposal";
+import { createClient } from "@/lib/supabase/server";
+import { DisposalSaveButton } from "@/components/disposal/DisposalSaveButton";
 import {
   FACILITY_TYPE_LABELS,
   FACILITY_TYPE_COLORS,
@@ -60,6 +62,23 @@ export default async function DisposalFacilityPage({ params }: Props) {
 
   if (!facility) notFound();
 
+  // Check if the current user has saved this facility
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  let initialSaved = false;
+  if (user) {
+    const { data } = await supabase
+      .from("saved_disposal_facilities")
+      .select("id")
+      .eq("user_id", user.id)
+      .eq("facility_id", facility.id)
+      .maybeSingle();
+    initialSaved = !!data;
+  }
+
   const typeLabel = FACILITY_TYPE_LABELS[facility.facility_type as FacilityType] ?? facility.facility_type;
   const typeColor = FACILITY_TYPE_COLORS[facility.facility_type as FacilityType] ?? "bg-gray-100 text-gray-700";
 
@@ -80,24 +99,33 @@ export default async function DisposalFacilityPage({ params }: Props) {
 
       {/* Header */}
       <div className="bg-white rounded-xl border border-gray-200 p-6 mb-4">
-        <div className="flex items-start gap-3 flex-wrap mb-3">
-          <span className={`inline-flex items-center text-xs font-medium px-2.5 py-1 rounded-full ${typeColor}`}>
-            {typeLabel}
-          </span>
-          {!facility.active && (
-            <span className="inline-flex items-center text-xs font-medium px-2.5 py-1 rounded-full bg-red-50 text-red-600">
-              Closed / Inactive
+        <div className="flex items-start justify-between gap-3">
+          <div className="flex items-center gap-3 flex-wrap">
+            <span className={`inline-flex items-center text-xs font-medium px-2.5 py-1 rounded-full ${typeColor}`}>
+              {typeLabel}
             </span>
-          )}
-          {facility.verified && (
-            <span className="inline-flex items-center gap-1 text-xs font-medium text-[#2D6A4F]">
-              <CheckCircle className="size-3.5" />
-              Verified
-            </span>
+            {!facility.active && (
+              <span className="inline-flex items-center text-xs font-medium px-2.5 py-1 rounded-full bg-red-50 text-red-600">
+                Closed / Inactive
+              </span>
+            )}
+            {facility.verified && (
+              <span className="inline-flex items-center gap-1 text-xs font-medium text-[#2D6A4F]">
+                <CheckCircle className="size-3.5" />
+                Verified
+              </span>
+            )}
+          </div>
+          {user && (
+            <DisposalSaveButton
+              facilityId={facility.id}
+              initialSaved={initialSaved}
+              size="md"
+            />
           )}
         </div>
 
-        <h1 className="text-2xl font-bold text-gray-900 mb-2">{facility.name}</h1>
+        <h1 className="text-2xl font-bold text-gray-900 mb-2 mt-3">{facility.name}</h1>
 
         {(facility.address || facility.city) && (
           <div className="flex items-start gap-2 text-gray-600 text-sm">

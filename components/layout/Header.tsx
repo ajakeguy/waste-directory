@@ -39,7 +39,7 @@ export default async function Header() {
             href="/directory"
             className="text-sm font-medium text-white/90 hover:text-white transition-colors"
           >
-            Directory
+            Haulers
           </Link>
           <Link
             href="/disposal"
