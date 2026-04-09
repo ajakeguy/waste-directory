@@ -28,6 +28,7 @@ Required env vars:
 """
 
 import csv
+import io
 import os
 import re
 import sys
@@ -127,8 +128,10 @@ def parse_city_from_address(address: str) -> str | None:
 
 def load_ma_haulers() -> list[dict]:
     """
-    Read the CSV with variable-length rows due to unquoted service area towns.
-    Row 0 is the header — skip it.
+    Read the CSV. The file stores each entire row as CSV text inside
+    column A (same structure as CTHaulers_CSV.xlsx — single-column with
+    embedded CSV). Re-parse each non-empty col[0] with csv.reader.
+    Row 0 is the header line — skip it.
     """
     if not os.path.exists(FILE_PATH):
         print(f"[ERR] File not found: {FILE_PATH}", file=sys.stderr)
@@ -137,62 +140,67 @@ def load_ma_haulers() -> list[dict]:
     records: list[dict] = []
     skipped_header = False
 
-    for enc in ("utf-8", "latin-1", "cp1252"):
-        try:
-            with open(FILE_PATH, encoding=enc, errors="replace", newline="") as f:
-                reader = csv.reader(f)
-                for row in reader:
-                    if not skipped_header:
-                        skipped_header = True   # skip header row
-                        continue
-                    if len(row) < 2:
-                        continue
+    # utf-8-sig strips BOM automatically
+    with open(FILE_PATH, encoding="utf-8-sig", errors="replace", newline="") as f:
+        outer_reader = csv.reader(f)
+        for outer_row in outer_reader:
+            if not skipped_header:
+                skipped_header = True   # skip header row
+                continue
 
-                    hauler_name = row[0].strip()
-                    address_raw = row[1].strip() if len(row) > 1 else ""
-                    phone_raw   = row[2].strip() if len(row) > 2 else ""
-                    website_raw = row[3].strip() if len(row) > 3 else ""
+            # The real data is the full CSV text stored in col[0]
+            raw = outer_row[0].strip() if outer_row else ""
+            if not raw:
+                continue   # blank/trailing row
 
-                    if not hauler_name:
-                        continue
+            # Re-parse the CSV line to get individual fields
+            try:
+                row = next(csv.reader(io.StringIO(raw)))
+            except StopIteration:
+                continue
 
-                    # Detect structured tail columns
-                    # col[-1] = Recycling_Policy_Note (discard)
-                    # col[-2] = Year if it matches NNNN-NNNN
-                    # col[-3] = Services/Notes if year in col[-2]
-                    services_notes = ""
-                    year           = ""
-                    if len(row) >= 7 and YEAR_RE.match(row[-2].strip()):
-                        year           = row[-2].strip()
-                        services_notes = row[-3].strip()
-                        town_cols      = row[4:-3]
-                    else:
-                        # Fallback: everything from col 4 to second-to-last is
-                        # service area (including any services text mixed in)
-                        town_cols = row[4:-1]
+            if not row:
+                continue
 
-                    towns = [t.strip() for t in town_cols if t.strip()]
-                    city  = parse_city_from_address(address_raw) or (towns[0] if towns else None)
-                    zip_  = parse_zip(address_raw)
+            hauler_name = row[0].strip()
+            address_raw = row[1].strip() if len(row) > 1 else ""
+            phone_raw   = row[2].strip() if len(row) > 2 else ""
+            website_raw = row[3].strip() if len(row) > 3 else ""
 
-                    records.append({
-                        "name":          hauler_name,
-                        "address":       address_raw or None,
-                        "city":          city,
-                        "zip":           zip_,
-                        "phone":         clean_phone(phone_raw),
-                        "website":       ensure_https(website_raw),
-                        "service_types": map_service_types(services_notes, hauler_name),
-                        "license_metadata": {
-                            "ma_service_towns": towns,
-                            "ma_year":          year,
-                        },
-                    })
-            break   # encoding worked
-        except UnicodeDecodeError:
-            skipped_header = False
-            records.clear()
-            continue
+            if not hauler_name:
+                continue
+
+            # Detect structured tail columns
+            # col[-1] = Recycling_Policy_Note (discard)
+            # col[-2] = Year if it matches NNNN-NNNN
+            # col[-3] = Services/Notes if year in col[-2]
+            services_notes = ""
+            year           = ""
+            if len(row) >= 7 and YEAR_RE.match(row[-2].strip()):
+                year           = row[-2].strip()
+                services_notes = row[-3].strip()
+                town_cols      = row[4:-3]
+            else:
+                # Fallback: everything from col 4 to second-to-last
+                town_cols = row[4:-1]
+
+            towns = [t.strip() for t in town_cols if t.strip()]
+            city  = parse_city_from_address(address_raw) or (towns[0] if towns else None)
+            zip_  = parse_zip(address_raw)
+
+            records.append({
+                "name":          hauler_name,
+                "address":       address_raw or None,
+                "city":          city,
+                "zip":           zip_,
+                "phone":         clean_phone(phone_raw),
+                "website":       ensure_https(website_raw),
+                "service_types": map_service_types(services_notes, hauler_name),
+                "license_metadata": {
+                    "ma_service_towns": towns,
+                    "ma_year":          year,
+                },
+            })
 
     print(f"Parsed {len(records)} haulers from source file")
     return records

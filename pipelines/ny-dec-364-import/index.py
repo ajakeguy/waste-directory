@@ -162,8 +162,11 @@ def load_ny_transporters() -> pd.DataFrame:
     print(f"  Sheet 1 (Permittees):  {len(df1):,} rows")
     print(f"  Sheet 2 (Registrants): {len(df2):,} rows")
 
-    # Fix Sheet 2 column name typo
-    df2 = df2.rename(columns={"Contact Nmae": "Contact Name"})
+    # Fix Sheet 2 column name differences vs Sheet 1
+    df2 = df2.rename(columns={
+        "Contact Nmae":      "Contact Name",    # typo in source file
+        "Registration Number": "Permit Number", # Sheet 2 uses different label
+    })
 
     # Normalise permit numbers to string for dedup
     df1["Permit Number"] = df1["Permit Number"].astype(str).str.strip()
