@@ -123,8 +123,11 @@ def map_facility(attrs: dict) -> dict | None:
     accepts_organics  = facility_type == "composting"
 
     # NH DES OneStop direct facility URL — from ONESTOP_LINK field in ArcGIS data
-    # Format: http://www4.des.state.nh.us/DESOneStop/SWFDetail.aspx?ID=XXXXXXX
+    # Format: https://www4.des.state.nh.us/DESOneStop/SWFDetail.aspx?ID=XXXXXXX
+    # Force https:// to avoid mixed-content blocking on our HTTPS site
     website = (attrs.get("ONESTOP_LINK") or "").strip() or None
+    if website and website.startswith("http://"):
+        website = "https://" + website[7:]
 
     return {
         "name":          name,
@@ -202,6 +205,8 @@ def main() -> None:
         attrs = f["attributes"]
         permit = (attrs.get("SWF_PERMIT") or "").strip()
         link   = (attrs.get("ONESTOP_LINK") or "").strip()
+        if link and link.startswith("http://"):
+            link = "https://" + link[7:]
         if permit and link:
             permit_to_url[permit] = link
 

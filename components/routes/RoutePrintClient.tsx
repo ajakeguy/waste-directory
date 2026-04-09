@@ -27,18 +27,12 @@ function distMi(a: RouteStop, b: RouteStop): string {
 
 type Props = {
   route: SavedRoute;
+  orderedStops: RouteStop[];
+  today: string;
 };
 
-export function RoutePrintClient({ route }: Props) {
+export function RoutePrintClient({ route, orderedStops, today }: Props) {
   const mapRef = useRef<HTMLDivElement>(null);
-
-  const orderedStops: RouteStop[] = route.optimized_order
-    ? route.optimized_order.map((i) => route.stops[i]).filter(Boolean)
-    : route.stops;
-
-  const today = new Date().toLocaleDateString("en-US", {
-    month: "long", day: "numeric", year: "numeric",
-  });
 
   useEffect(() => {
     const geocodedStops = orderedStops.filter((s) => s.lat && s.lng);
