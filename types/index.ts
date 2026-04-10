@@ -245,7 +245,6 @@ export type FacilityType =
   | "composting"
   | "anaerobic_digestion"
   | "waste_to_energy"
-  | "recycling_center"
   | "hazardous_waste"
   | "cd_facility"
 
@@ -256,7 +255,6 @@ export const FACILITY_TYPE_LABELS: Record<FacilityType, string> = {
   composting:          "Composting",
   anaerobic_digestion: "Anaerobic Digestion",
   waste_to_energy:     "Waste-to-Energy",
-  recycling_center:    "Recycling Center",
   hazardous_waste:     "Hazardous Waste",
   cd_facility:         "C&D Facility",
 }
@@ -271,7 +269,6 @@ export const FACILITY_TYPE_COLORS: Record<FacilityType, string> = {
   composting:          "bg-green-100 text-green-700",
   anaerobic_digestion: "bg-teal-100 text-teal-700",
   waste_to_energy:     "bg-orange-100 text-orange-700",
-  recycling_center:    "bg-purple-100 text-purple-700",
   hazardous_waste:     "bg-red-100 text-red-700",
   cd_facility:         "bg-yellow-100 text-yellow-700",
 }

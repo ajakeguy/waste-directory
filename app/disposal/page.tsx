@@ -37,7 +37,7 @@ function parsePageSize(raw: string | undefined): PageSize {
 }
 
 type SearchParams = Promise<{
-  state?: string;
+  states?: string;  // comma-separated 2-letter codes e.g. "MA,CT,NY"
   type?: string;
   active?: string;
   q?: string;
@@ -81,14 +81,14 @@ function ResultsSkeleton() {
 // ── Results ───────────────────────────────────────────────────────────────────
 
 async function DisposalResults({
-  state,
+  states,
   facility_type,
   active_only,
   q,
   page,
   pageSize,
 }: {
-  state?: string;
+  states: string[];
   facility_type?: string;
   active_only: boolean;
   q?: string;
@@ -96,7 +96,7 @@ async function DisposalResults({
   pageSize: PageSize;
 }) {
   const { data: facilities, count: total } = await getDisposalFacilitiesPaginated(
-    { state, facility_type, active_only, q },
+    { states, facility_type, active_only, q },
     page,
     pageSize
   );
@@ -204,13 +204,13 @@ async function DisposalResults({
 // ── Filter sidebar ────────────────────────────────────────────────────────────
 
 function FilterSidebar({
-  selectedState,
+  selectedStates,
   selectedType,
   activeOnly,
   q,
   perPage,
 }: {
-  selectedState?: string;
+  selectedStates: string[];
   selectedType?: string;
   activeOnly: boolean;
   q?: string;
@@ -219,7 +219,7 @@ function FilterSidebar({
   function buildUrl(overrides: Record<string, string | undefined>) {
     const params = new URLSearchParams();
     const merged: Record<string, string | undefined> = {
-      state:    selectedState,
+      states:   selectedStates.length > 0 ? selectedStates.join(",") : undefined,
       type:     selectedType,
       active:   activeOnly ? "1" : "0",
       q,
@@ -238,35 +238,50 @@ function FilterSidebar({
 
   return (
     <aside className="md:w-56 md:shrink-0 space-y-6">
-      {/* State */}
+      {/* State — multi-select toggle */}
       <div>
-        <h3 className="text-xs font-semibold uppercase tracking-wider text-gray-500 mb-2">
-          State
-        </h3>
-        <div className="space-y-1">
-          <Link
-            href={buildUrl({ state: undefined })}
-            className={`block text-sm px-2 py-1.5 rounded-lg transition-colors ${
-              !selectedState
-                ? "bg-[#2D6A4F]/10 text-[#2D6A4F] font-medium"
-                : "text-gray-600 hover:bg-gray-50"
-            }`}
-          >
-            All States
-          </Link>
-          {STATE_OPTIONS.map((s) => (
+        <div className="flex items-center justify-between mb-2">
+          <h3 className="text-xs font-semibold uppercase tracking-wider text-gray-500">
+            State
+          </h3>
+          {selectedStates.length > 0 && (
             <Link
-              key={s.code}
-              href={buildUrl({ state: s.code })}
-              className={`block text-sm px-2 py-1.5 rounded-lg transition-colors ${
-                selectedState === s.code
-                  ? "bg-[#2D6A4F]/10 text-[#2D6A4F] font-medium"
-                  : "text-gray-600 hover:bg-gray-50"
-              }`}
+              href={buildUrl({ states: undefined })}
+              className="text-xs text-[#2D6A4F] hover:underline"
             >
-              {s.name}
+              Clear
             </Link>
-          ))}
+          )}
+        </div>
+        <div className="space-y-1">
+          {STATE_OPTIONS.map((s) => {
+            const isSelected = selectedStates.includes(s.code);
+            const nextStates = isSelected
+              ? selectedStates.filter((c) => c !== s.code)
+              : [...selectedStates, s.code];
+            return (
+              <Link
+                key={s.code}
+                href={buildUrl({ states: nextStates.length > 0 ? nextStates.join(",") : undefined })}
+                className={`flex items-center gap-2 text-sm px-2 py-1.5 rounded-lg transition-colors ${
+                  isSelected
+                    ? "bg-[#2D6A4F]/10 text-[#2D6A4F] font-medium"
+                    : "text-gray-600 hover:bg-gray-50"
+                }`}
+              >
+                <span
+                  className={`size-4 shrink-0 rounded border flex items-center justify-center text-[10px] font-bold ${
+                    isSelected
+                      ? "bg-[#2D6A4F] border-[#2D6A4F] text-white"
+                      : "border-gray-300"
+                  }`}
+                >
+                  {isSelected ? "✓" : ""}
+                </span>
+                {s.name}
+              </Link>
+            );
+          })}
         </div>
       </div>
 
@@ -364,14 +379,17 @@ export default async function DisposalPage({
   searchParams: SearchParams;
 }) {
   const params = await searchParams;
-  const state         = params.state?.toUpperCase() || undefined;
+  const selectedStates = (params.states ?? "")
+    .split(",")
+    .map((s) => s.trim().toUpperCase())
+    .filter(Boolean);
   const facility_type = params.type || undefined;
   const active_only   = params.active !== "0";
   const q             = params.q || undefined;
   const page          = Math.max(1, parseInt(params.page ?? "1", 10) || 1);
   const pageSize      = parsePageSize(params.per_page);
 
-  const filters = { state, facility_type, active_only, q };
+  const filters = { states: selectedStates, facility_type, active_only, q };
 
   // Fetch facilities for map (server-side, passed as props to client component)
   const mapFacilities = await getDisposalFacilitiesForMap(filters);
@@ -402,7 +420,7 @@ export default async function DisposalPage({
 
       <div className="flex flex-col md:flex-row gap-4 md:gap-6 md:items-start">
         <FilterSidebar
-          selectedState={state}
+          selectedStates={selectedStates}
           selectedType={facility_type}
           activeOnly={active_only}
           q={q}
@@ -412,7 +430,7 @@ export default async function DisposalPage({
         <div className="flex-1 min-w-0">
           <Suspense fallback={<ResultsSkeleton />}>
             <DisposalResults
-              state={state}
+              states={selectedStates}
               facility_type={facility_type}
               active_only={active_only}
               q={q}

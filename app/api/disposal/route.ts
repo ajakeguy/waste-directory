@@ -4,7 +4,8 @@ import { getDisposalFacilitiesPaginated } from "@/lib/data/disposal";
 export async function GET(req: NextRequest) {
   const { searchParams } = req.nextUrl;
 
-  const state         = searchParams.get("state")         ?? undefined;
+  const statesParam   = searchParams.get("states");
+  const states        = statesParam ? statesParam.split(",").filter(Boolean) : undefined;
   const facility_type = searchParams.get("type")          ?? undefined;
   const q             = searchParams.get("search")        ?? undefined;
   const active_only   = searchParams.get("active") !== "0";
@@ -12,7 +13,7 @@ export async function GET(req: NextRequest) {
   const per_page      = Math.min(100, parseInt(searchParams.get("per_page") ?? "25", 10) || 25);
 
   const { data, count } = await getDisposalFacilitiesPaginated(
-    { state, facility_type, active_only, q },
+    { states, facility_type, active_only, q },
     page,
     per_page
   );

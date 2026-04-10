@@ -2,7 +2,8 @@ import { createClient } from "@/lib/supabase/server";
 import type { DisposalFacility } from "@/types";
 
 export type DisposalFilters = {
-  state?: string;           // 2-letter code
+  state?: string;    // single 2-letter code (legacy/landing pages)
+  states?: string[]; // multi-select — used by directory page
   facility_type?: string;
   active_only?: boolean;
   q?: string;
@@ -22,7 +23,9 @@ export async function getDisposalFacilities(
     query = query.eq("active", true);
   }
 
-  if (filters.state) {
+  if (filters.states && filters.states.length > 0) {
+    query = query.overlaps("service_area_states", filters.states);
+  } else if (filters.state) {
     query = query.contains("service_area_states", [filters.state]);
   }
 
@@ -61,7 +64,9 @@ export async function getDisposalFacilitiesPaginated(
     query = query.eq("active", true);
   }
 
-  if (filters.state) {
+  if (filters.states && filters.states.length > 0) {
+    query = query.overlaps("service_area_states", filters.states);
+  } else if (filters.state) {
     query = query.contains("service_area_states", [filters.state]);
   }
 
@@ -102,7 +107,9 @@ export async function getDisposalFacilitiesForMap(
   if (filters.active_only !== false) {
     query = query.eq("active", true);
   }
-  if (filters.state) {
+  if (filters.states && filters.states.length > 0) {
+    query = query.overlaps("service_area_states", filters.states);
+  } else if (filters.state) {
     query = query.contains("service_area_states", [filters.state]);
   }
   if (filters.facility_type) {

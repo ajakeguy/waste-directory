@@ -42,7 +42,6 @@ const MAP_COLORS: Record<string, string> = {
   composting:          "#22C55E",
   anaerobic_digestion: "#14B8A6",
   waste_to_energy:     "#F97316",
-  recycling_center:    "#A855F7",
   hazardous_waste:     "#EF4444",
   cd_facility:         "#EAB308",
 };
@@ -54,7 +53,6 @@ const TYPE_LABELS: Record<string, string> = {
   composting:          "Composting",
   anaerobic_digestion: "Anaerobic Digestion",
   waste_to_energy:     "Waste-to-Energy",
-  recycling_center:    "Recycling Center",
   hazardous_waste:     "Hazardous Waste",
   cd_facility:         "C&D Facility",
 };

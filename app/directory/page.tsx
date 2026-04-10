@@ -24,7 +24,7 @@ function parsePageSize(raw: string | undefined): PageSize {
 }
 
 type SearchParams = Promise<{
-  state?: string;
+  states?: string;  // comma-separated 2-letter codes e.g. "CT,NY,MA"
   service?: string | string[];
   verified?: string;
   q?: string;
@@ -54,7 +54,7 @@ function ResultsSkeleton() {
 }
 
 async function DirectoryResults({
-  state,
+  states,
   services,
   verified,
   q,
@@ -62,7 +62,7 @@ async function DirectoryResults({
   page,
   pageSize,
 }: {
-  state?: string;
+  states: string[];
   services: string[];
   verified: boolean;
   q?: string;
@@ -71,7 +71,7 @@ async function DirectoryResults({
   pageSize: PageSize;
 }) {
   const [{ data: organizations, count: total }, savedOrgIds] = await Promise.all([
-    getOrganizationsPaginated({ state, services, verified, q }, page, pageSize),
+    getOrganizationsPaginated({ states, services, verified, q }, page, pageSize),
     userId ? getSavedOrgIds(userId) : Promise.resolve(new Set<string>()),
   ]);
 
@@ -119,6 +119,11 @@ export default async function DirectoryPage({
 }) {
   const params = await searchParams;
 
+  const states = (params.states ?? "")
+    .split(",")
+    .map((s) => s.trim().toUpperCase())
+    .filter(Boolean);
+
   const services = params.service
     ? Array.isArray(params.service)
       ? params.service
@@ -162,7 +167,7 @@ export default async function DirectoryPage({
         <div className="flex-1 min-w-0">
           <Suspense fallback={<ResultsSkeleton />}>
             <DirectoryResults
-              state={params.state}
+              states={states}
               services={services}
               verified={params.verified === "1"}
               q={params.q}

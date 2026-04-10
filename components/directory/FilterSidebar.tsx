@@ -30,7 +30,8 @@ export function FilterSidebar({
 
   const [mobileOpen, setMobileOpen] = useState(false);
 
-  const state = defaultState ?? searchParams.get("state") ?? "";
+  const statesStr = defaultState ? defaultState : (searchParams.get("states") ?? "");
+  const selectedStates = statesStr ? statesStr.split(",").filter(Boolean) : [];
   const services = searchParams.getAll("service");
   const verified = searchParams.get("verified") === "1";
 
@@ -59,19 +60,21 @@ export function FilterSidebar({
     updateParams({ service: next });
   };
 
-  const clearAll = () => {
-    if (defaultState) {
-      // Keep the state locked; only clear service/verified filters
-      router.push(pathname);
-    } else {
-      router.push(pathname);
-    }
+  const toggleState = (code: string) => {
+    const next = selectedStates.includes(code)
+      ? selectedStates.filter((s) => s !== code)
+      : [...selectedStates, code];
+    updateParams({ states: next.join(",") || null });
   };
 
-  const hasFilters = (!defaultState && state) || services.length > 0 || verified;
+  const clearAll = () => {
+    router.push(pathname);
+  };
+
+  const hasFilters = (!defaultState && selectedStates.length > 0) || services.length > 0 || verified;
 
   const activeFilterCount =
-    ((!defaultState && state) ? 1 : 0) + services.length + (verified ? 1 : 0);
+    (!defaultState ? selectedStates.length : 0) + services.length + (verified ? 1 : 0);
 
   return (
     <aside className="w-full md:w-64 md:shrink-0">
@@ -109,25 +112,40 @@ export function FilterSidebar({
           )}
         </div>
 
-        {/* State selector — hidden when a state is pre-selected */}
+        {/* State checkboxes — hidden when a state is pre-selected via defaultState */}
         {!defaultState && (
           <div className="mb-6">
-            <label className="block text-xs font-semibold uppercase tracking-wide text-gray-500 mb-2">
-              State
-            </label>
-            <select
-              value={state}
-              onChange={(e) =>
-                updateParams({ state: e.target.value || null })
-              }
-              className="w-full h-9 rounded-lg border border-gray-200 bg-white px-3 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-[#2D6A4F]/30 focus:border-[#2D6A4F] cursor-pointer"
-            >
-              {STATE_OPTIONS.map((s) => (
-                <option key={s.value} value={s.value}>
-                  {s.label}
-                </option>
+            <div className="flex items-center justify-between mb-2">
+              <label className="text-xs font-semibold uppercase tracking-wide text-gray-500">
+                State
+              </label>
+              {selectedStates.length > 0 && (
+                <button
+                  onClick={() => updateParams({ states: null })}
+                  className="text-xs text-[#2D6A4F] hover:underline"
+                >
+                  Clear
+                </button>
+              )}
+            </div>
+            <div className="space-y-1.5">
+              {STATE_OPTIONS.filter((s) => s.value !== "").map((s) => (
+                <label
+                  key={s.value}
+                  className="flex items-center gap-2 cursor-pointer group"
+                >
+                  <input
+                    type="checkbox"
+                    checked={selectedStates.includes(s.value)}
+                    onChange={() => toggleState(s.value)}
+                    className="size-4 rounded border-gray-300 accent-[#2D6A4F] cursor-pointer"
+                  />
+                  <span className="text-sm text-gray-700 group-hover:text-gray-900 leading-snug">
+                    {s.label}
+                  </span>
+                </label>
               ))}
-            </select>
+            </div>
           </div>
         )}
 

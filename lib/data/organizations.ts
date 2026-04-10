@@ -15,7 +15,8 @@ export type Contact = {
 };
 
 export type OrganizationFilters = {
-  state?: string; // 2-letter code e.g. "VT"
+  state?: string;   // single 2-letter code — used by state landing pages
+  states?: string[]; // multi-select — used by the main directory page
   services?: string[];
   verified?: boolean;
   q?: string;
@@ -32,7 +33,9 @@ export async function getOrganizations(
     .eq("active", true)
     .order("name");
 
-  if (filters.state) {
+  if (filters.states && filters.states.length > 0) {
+    query = query.overlaps("service_area_states", filters.states);
+  } else if (filters.state) {
     // Filter by service area, not HQ state — so a NJ-based company with a
     // VT permit still shows up when browsing Vermont haulers.
     query = query.contains("service_area_states", [filters.state]);
@@ -112,7 +115,9 @@ export async function getOrganizationsPaginated(
     .order("name")
     .range(from, to);
 
-  if (filters.state) {
+  if (filters.states && filters.states.length > 0) {
+    query = query.overlaps("service_area_states", filters.states);
+  } else if (filters.state) {
     query = query.contains("service_area_states", [filters.state]);
   }
 
