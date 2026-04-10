@@ -1,12 +1,83 @@
 import { createClient } from "@/lib/supabase/server";
 import type { DisposalFacility } from "@/types";
 
+// ---------------------------------------------------------------------------
+// Materials filter helper
+// ---------------------------------------------------------------------------
+
+const BOOL_MAP: Record<string, string> = {
+  recycling:    "accepts_recycling",
+  composting:   "accepts_organics",
+  organics:     "accepts_organics",
+  food:         "accepts_organics",
+  fw:           "accepts_organics",
+  hazardous:    "accepts_hazardous",
+  cd:           "accepts_cd",
+  construction: "accepts_cd",
+  msw:          "accepts_msw",
+  special:      "accepts_special_waste",
+};
+
+const CODE_MAP: Record<string, string> = {
+  tires:        "T",
+  t:            "T",
+  electronics:  "CE",
+  ewaste:       "CE",
+  ce:           "CE",
+  asphalt:      "A",
+  a:            "A",
+  concrete:     "C",
+  c:            "C",
+  batteries:    "B",
+  b:            "B",
+  "food waste": "FW",
+  leaves:       "L",
+  l:            "L",
+  brush:        "BR",
+  br:           "BR",
+  wood:         "W",
+  w:            "W",
+};
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function applyMaterialsFilter(query: any, materials: string[]): any {
+  const orParts: string[] = [];
+  const codeSet    = new Set<string>();
+  const boolFields = new Set<string>();
+
+  for (const m of materials) {
+    const key = m.toLowerCase().trim();
+    if (BOOL_MAP[key]) {
+      boolFields.add(BOOL_MAP[key]);
+    } else if (CODE_MAP[key]) {
+      codeSet.add(CODE_MAP[key]);
+    } else {
+      // Treat as raw material code (e.g. "FW", "CE", "BB")
+      codeSet.add(m.toUpperCase());
+    }
+  }
+
+  for (const field of boolFields) {
+    orParts.push(`${field}.eq.true`);
+  }
+  for (const code of codeSet) {
+    orParts.push(`accepted_materials->codes.cs.["${code}"]`);
+  }
+
+  if (orParts.length > 0) {
+    query = query.or(orParts.join(","));
+  }
+
+  return query;
+}
+
 export type DisposalFilters = {
-  state?: string;    // single 2-letter code (legacy/landing pages)
-  states?: string[]; // multi-select — used by directory page
+  state?: string;      // single 2-letter code (legacy/landing pages)
+  states?: string[];   // multi-select — used by directory page
   facility_type?: string;
   active_only?: boolean;
   q?: string;
+  materials?: string[]; // accepted material filter (codes or friendly names)
 };
 
 export async function getDisposalFacilities(
@@ -35,6 +106,10 @@ export async function getDisposalFacilities(
 
   if (filters.q) {
     query = query.ilike("name", `%${filters.q}%`);
+  }
+
+  if (filters.materials && filters.materials.length > 0) {
+    query = applyMaterialsFilter(query, filters.materials);
   }
 
   const { data, error } = await query;
@@ -78,6 +153,10 @@ export async function getDisposalFacilitiesPaginated(
     query = query.ilike("name", `%${filters.q}%`);
   }
 
+  if (filters.materials && filters.materials.length > 0) {
+    query = applyMaterialsFilter(query, filters.materials);
+  }
+
   const { data, error, count } = await query;
   if (error) {
     console.error("Error fetching disposal facilities (paginated):", error);
@@ -117,6 +196,10 @@ export async function getDisposalFacilitiesForMap(
   }
   if (filters.q) {
     query = query.ilike("name", `%${filters.q}%`);
+  }
+
+  if (filters.materials && filters.materials.length > 0) {
+    query = applyMaterialsFilter(query, filters.materials);
   }
 
   const { data, error } = await query;

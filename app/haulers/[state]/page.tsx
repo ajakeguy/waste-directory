@@ -36,6 +36,7 @@ import {
 } from "@/lib/data/organizations";
 import { getSavedOrgIds } from "@/lib/data/saved-items";
 import { HaulerNotes } from "@/components/hauler/HaulerNotes";
+import { ContributionSection } from "@/components/hauler/ContributionSection";
 import { createClient } from "@/lib/supabase/server";
 import {
   STATE_SLUG_TO_CODE,
@@ -675,6 +676,13 @@ async function HaulerProfilePage({ segment }: { segment: string }) {
         userId={user?.id ?? null}
         isSaved={isSaved}
         initialNote={savedNote}
+      />
+
+      {/* Community contributions */}
+      <ContributionSection
+        orgId={org.id}
+        stateCode={org.state ?? ""}
+        isLoggedIn={!!user}
       />
 
       {/* Footer */}
