@@ -58,14 +58,11 @@ export function MobileNav({
             <NavLink href="/disposal" onClose={() => setOpen(false)}>
               Disposal
             </NavLink>
+            <NavLink href="/tools" onClose={() => setOpen(false)}>
+              Tools
+            </NavLink>
             <NavLink href="/marketplace" onClose={() => setOpen(false)}>
               Marketplace
-            </NavLink>
-            <NavLink href="/reports" onClose={() => setOpen(false)}>
-              Reports
-            </NavLink>
-            <NavLink href="/routes" onClose={() => setOpen(false)}>
-              Routes
             </NavLink>
             <NavLink href="/news" onClose={() => setOpen(false)}>
               News

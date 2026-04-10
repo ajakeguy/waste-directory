@@ -30,7 +30,7 @@ export default async function Header() {
           href="/"
           className="text-xl font-bold tracking-tight hover:opacity-90 transition-opacity"
         >
-          WasteDirectory
+          waste.markets
         </Link>
 
         {/* Nav links — desktop only */}
@@ -48,22 +48,16 @@ export default async function Header() {
             Disposal
           </Link>
           <Link
+            href="/tools"
+            className="text-sm font-medium text-white/90 hover:text-white transition-colors"
+          >
+            Tools
+          </Link>
+          <Link
             href="/marketplace"
             className="text-sm font-medium text-white/90 hover:text-white transition-colors"
           >
             Marketplace
-          </Link>
-          <Link
-            href="/reports"
-            className="text-sm font-medium text-white/90 hover:text-white transition-colors"
-          >
-            Reports
-          </Link>
-          <Link
-            href="/routes"
-            className="text-sm font-medium text-white/90 hover:text-white transition-colors"
-          >
-            Routes
           </Link>
           <Link
             href="/news"
