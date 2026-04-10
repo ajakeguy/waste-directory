@@ -3,7 +3,7 @@
 import { useState, useRef, useEffect } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { ChevronDown, LayoutDashboard, LogOut } from "lucide-react";
+import { ChevronDown, LayoutDashboard, LogOut, PlusCircle } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 
 type Props = {
@@ -78,6 +78,15 @@ export function UserMenu({ name, email }: Props) {
           >
             <LayoutDashboard className="size-4 text-gray-400" />
             Dashboard
+          </Link>
+
+          <Link
+            href="/submit"
+            onClick={() => setOpen(false)}
+            className="flex items-center gap-2.5 px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 transition-colors"
+          >
+            <PlusCircle className="size-4 text-gray-400" />
+            Submit a Listing
           </Link>
 
           <button

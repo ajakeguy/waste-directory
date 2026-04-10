@@ -16,6 +16,8 @@ import { getDisposalFacilityBySlug } from "@/lib/data/disposal";
 import { createClient } from "@/lib/supabase/server";
 import { DisposalSaveButton } from "@/components/disposal/DisposalSaveButton";
 import { FacilityMap } from "@/components/disposal/FacilityMap";
+import { SuggestContactButton } from "@/components/shared/SuggestContactButton";
+import { FacilityContributionSection } from "@/components/disposal/FacilityContributionSection";
 import {
   FACILITY_TYPE_LABELS,
   FACILITY_TYPE_COLORS,
@@ -193,6 +195,13 @@ export default async function DisposalFacilityPage({ params }: Props) {
                 </div>
               )}
             </div>
+            <div className="pt-4 mt-4 border-t border-gray-100">
+              <SuggestContactButton
+                entityType="facility"
+                entityId={facility.id}
+                isLoggedIn={!!user}
+              />
+            </div>
           </div>
         )}
 
@@ -292,6 +301,27 @@ export default async function DisposalFacilityPage({ params }: Props) {
             Notes
           </h2>
           <p className="text-sm text-gray-600 leading-relaxed">{facility.notes}</p>
+        </div>
+      )}
+
+      {/* Community material contributions */}
+      <FacilityContributionSection
+        facilitySlug={slug}
+        isLoggedIn={!!user}
+      />
+
+      {/* Suggest a contact — shown when there's no existing contact info */}
+      {!hasContact && (
+        <div className="bg-white rounded-xl border border-gray-200 p-6 mt-4">
+          <h2 className="text-sm font-semibold text-gray-900 mb-2 uppercase tracking-wider">
+            Contact Information
+          </h2>
+          <p className="text-sm text-gray-400 mb-3">No contact information on file.</p>
+          <SuggestContactButton
+            entityType="facility"
+            entityId={facility.id}
+            isLoggedIn={!!user}
+          />
         </div>
       )}
 

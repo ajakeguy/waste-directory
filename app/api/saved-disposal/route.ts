@@ -40,6 +40,30 @@ export async function POST(request: Request) {
   return NextResponse.json({ ok: true }, { status: 201 });
 }
 
+export async function PATCH(request: Request) {
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
+  const { facility_id, notes } = (await request.json()) as {
+    facility_id?: string;
+    notes?: string;
+  };
+  if (!facility_id)
+    return NextResponse.json({ error: "facility_id required" }, { status: 400 });
+
+  const { error } = await supabase
+    .from("saved_disposal_facilities")
+    .update({ notes: notes ?? null })
+    .eq("user_id", user.id)
+    .eq("facility_id", facility_id);
+
+  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+  return NextResponse.json({ ok: true });
+}
+
 export async function DELETE(request: Request) {
   const supabase = await createClient();
   const {

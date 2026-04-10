@@ -489,7 +489,7 @@ export default async function DisposalPage({
           perPage={pageSize}
         />
 
-        <div className="flex-1 min-w-0">
+        <div className="flex-1 min-w-0 space-y-4">
           <Suspense fallback={<ResultsSkeleton />}>
             <DisposalResults
               states={effectiveStates}
@@ -500,6 +500,19 @@ export default async function DisposalPage({
               pageSize={pageSize}
             />
           </Suspense>
+
+          {/* Add missing facility banner */}
+          <div className="rounded-xl border border-dashed border-gray-200 bg-gray-50 px-6 py-5 flex flex-col sm:flex-row items-center justify-between gap-4">
+            <p className="text-sm text-gray-600">
+              Missing a facility from our directory?
+            </p>
+            <Link
+              href="/submit"
+              className="shrink-0 inline-flex items-center gap-1.5 text-sm font-medium text-[#2D6A4F] hover:underline"
+            >
+              Suggest a facility →
+            </Link>
+          </div>
         </div>
       </div>
     </div>

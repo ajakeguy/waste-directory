@@ -119,19 +119,20 @@ export default async function DashboardPage() {
   // not the alias. So the key is "disposal_facilities", not "facility".
   type SavedFacilityRow = {
     facility_id: string;
+    notes: string | null;
     disposal_facilities: Pick<DisposalFacility, "id" | "name" | "slug" | "facility_type" | "city" | "state"> | null;
   };
 
   const { data: savedDisposalRows } = await supabase
     .from("saved_disposal_facilities")
-    .select("facility_id, disposal_facilities(id, name, slug, facility_type, city, state)")
+    .select("facility_id, notes, disposal_facilities(id, name, slug, facility_type, city, state)")
     .eq("user_id", user.id)
     .order("created_at", { ascending: false })
     .limit(20);
 
   const savedFacilities = ((savedDisposalRows ?? []) as unknown as SavedFacilityRow[])
     .filter((r) => r.disposal_facilities !== null && r.disposal_facilities?.slug)
-    .map((r) => r.disposal_facilities!);
+    .map((r) => ({ ...r.disposal_facilities!, notes: r.notes }));
 
   return (
     <DashboardClient

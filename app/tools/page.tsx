@@ -13,7 +13,7 @@ const tools = [
     icon: Route,
     title: "Route Optimizer",
     description:
-      "Plan optimized collection routes for multiple stops. Upload stop lists, calculate distances, estimate fuel costs, and export turn-by-turn directions.",
+      "Plan optimized collection routes for multiple stops. Upload stop lists, calculate distances, estimate fuel costs, and export optimized route as CSV.",
     features: [
       "Multi-stop TSP optimization",
       "Fuel cost calculator",

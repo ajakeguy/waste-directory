@@ -78,7 +78,7 @@ type RecentRoute = Pick<
 type SavedFacility = Pick<
   DisposalFacility,
   "id" | "name" | "slug" | "facility_type" | "city" | "state"
->;
+> & { notes?: string | null };
 
 type Tab =
   | "overview"
@@ -128,6 +128,9 @@ export function DashboardClient({
   const [modalOpen, setModalOpen] = useState(false);
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
   const [haulerSearch, setHaulerSearch] = useState("");
+  const [facilityNotes, setFacilityNotes] = useState<Record<string, string>>(
+    Object.fromEntries(savedFacilities.map((f) => [f.id, f.notes ?? ""]))
+  );
   const router = useRouter();
 
   // ── Stats ────────────────────────────────────────────────────────────────
@@ -191,6 +194,14 @@ export function DashboardClient({
     setDeleteConfirmId(null);
     if (activeListId === listId) setActiveListId("all");
     router.refresh();
+  };
+
+  const handleFacilityNoteSave = async (facilityId: string, notes: string) => {
+    await fetch("/api/saved-disposal", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ facility_id: facilityId, notes }),
+    });
   };
 
   const activeList = lists.find((l) => l.id === activeListId);
@@ -628,25 +639,43 @@ export function DashboardClient({
                 {savedFacilities.filter((f) => f?.slug).map((f) => {
                   const typeColor = FACILITY_TYPE_COLORS[f.facility_type as FacilityType] ?? "bg-gray-100 text-gray-700";
                   const typeLabel = FACILITY_TYPE_LABELS[f.facility_type as FacilityType] ?? f.facility_type;
+                  const noteVal = facilityNotes[f.id] ?? "";
                   return (
-                    <Link
-                      key={f.id}
-                      href={`/disposal/${f.slug}`}
-                      className="bg-white rounded-lg border border-gray-200 p-4 hover:shadow-md hover:border-[#2D6A4F]/30 transition-all group"
-                    >
-                      <div className="flex items-start justify-between gap-2 mb-2">
-                        <p className="font-semibold text-gray-900 group-hover:text-[#2D6A4F] transition-colors leading-snug">
-                          {f.name}
+                    <div key={f.id} className="bg-white rounded-lg border border-gray-200 overflow-hidden hover:shadow-md hover:border-[#2D6A4F]/30 transition-all">
+                      <Link
+                        href={`/disposal/${f.slug}`}
+                        className="block p-4 group"
+                      >
+                        <div className="flex items-start justify-between gap-2 mb-2">
+                          <p className="font-semibold text-gray-900 group-hover:text-[#2D6A4F] transition-colors leading-snug">
+                            {f.name}
+                          </p>
+                          <span className={`shrink-0 text-xs px-2 py-0.5 rounded-full font-medium ${typeColor}`}>
+                            {typeLabel}
+                          </span>
+                        </div>
+                        <p className="text-sm text-gray-500 flex items-center gap-1">
+                          <MapPin className="size-3 shrink-0" />
+                          {[f.city, f.state].filter(Boolean).join(", ")}
                         </p>
-                        <span className={`shrink-0 text-xs px-2 py-0.5 rounded-full font-medium ${typeColor}`}>
-                          {typeLabel}
-                        </span>
+                      </Link>
+                      {/* Inline notes */}
+                      <div className="px-4 pb-3 border-t border-gray-100">
+                        <div className="flex items-start gap-2 pt-2.5">
+                          <StickyNote className="size-3.5 text-gray-300 shrink-0 mt-0.5" />
+                          <textarea
+                            value={noteVal}
+                            onChange={(e) =>
+                              setFacilityNotes((prev) => ({ ...prev, [f.id]: e.target.value }))
+                            }
+                            onBlur={() => handleFacilityNoteSave(f.id, noteVal)}
+                            placeholder="Add a note…"
+                            rows={1}
+                            className="w-full text-sm text-gray-600 bg-transparent resize-none focus:outline-none placeholder:text-gray-400 leading-snug"
+                          />
+                        </div>
                       </div>
-                      <p className="text-sm text-gray-500 flex items-center gap-1">
-                        <MapPin className="size-3 shrink-0" />
-                        {[f.city, f.state].filter(Boolean).join(", ")}
-                      </p>
-                    </Link>
+                    </div>
                   );
                 })}
               </div>

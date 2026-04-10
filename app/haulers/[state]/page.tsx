@@ -37,6 +37,7 @@ import {
 import { getSavedOrgIds } from "@/lib/data/saved-items";
 import { HaulerNotes } from "@/components/hauler/HaulerNotes";
 import { ContributionSection } from "@/components/hauler/ContributionSection";
+import { SuggestContactButton } from "@/components/shared/SuggestContactButton";
 import { createClient } from "@/lib/supabase/server";
 import {
   STATE_SLUG_TO_CODE,
@@ -345,6 +346,19 @@ async function StateLandingPage({
             userId={user?.id ?? null}
           />
         </Suspense>
+
+        {/* Add missing hauler banner */}
+        <div className="mt-8 rounded-xl border border-dashed border-gray-200 bg-gray-50 px-6 py-5 flex flex-col sm:flex-row items-center justify-between gap-4">
+          <p className="text-sm text-gray-600">
+            Don&apos;t see a hauler you know about?
+          </p>
+          <Link
+            href="/submit"
+            className="shrink-0 inline-flex items-center gap-1.5 text-sm font-medium text-[#2D6A4F] hover:underline"
+          >
+            Add a missing hauler →
+          </Link>
+        </div>
       </div>
     </div>
   );
@@ -669,6 +683,20 @@ async function HaulerProfilePage({ segment }: { segment: string }) {
           </div>
         </section>
       )}
+
+      {/* Suggest a contact */}
+      <section className="bg-white rounded-xl border border-gray-200 p-5 mb-4">
+        <h2 className="font-semibold text-gray-900 mb-3">Know a Contact?</h2>
+        <p className="text-sm text-gray-500 mb-3">
+          Help others by submitting contact information for this hauler.
+          Submissions are reviewed before being added.
+        </p>
+        <SuggestContactButton
+          entityType="hauler"
+          entityId={org.id}
+          isLoggedIn={!!user}
+        />
+      </section>
 
       {/* My Notes — visible to logged-in users only */}
       <HaulerNotes
