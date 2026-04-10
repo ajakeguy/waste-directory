@@ -67,15 +67,11 @@ export function FacilityMap({ facility }: { facility: DisposalFacility }) {
         return;
       }
 
-      // 2. Geocode via ORS Pelias
+      // 2. Geocode via server-side proxy (avoids CORS / exposes no API key)
       if (facility.address || facility.city) {
-        const apiKey = process.env.NEXT_PUBLIC_ORS_API_KEY;
-        if (!apiKey) return;
-
         try {
           const res  = await fetch(
-            `https://api.openrouteservice.org/geocode/search?api_key=${apiKey}` +
-            `&text=${encodeURIComponent(addressText)}&size=1&boundary.country=US`
+            `/api/ors/geocode?text=${encodeURIComponent(addressText)}`
           );
           const json = await res.json();
           const coords = json?.features?.[0]?.geometry?.coordinates;

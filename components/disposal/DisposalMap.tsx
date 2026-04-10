@@ -5,6 +5,7 @@
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { Search, X, MapPin } from "lucide-react";
+import { FACILITY_TYPE_LABELS } from "@/types";
 
 declare global {
   interface Window {
@@ -46,16 +47,8 @@ const MAP_COLORS: Record<string, string> = {
   cd_facility:         "#EAB308",
 };
 
-const TYPE_LABELS: Record<string, string> = {
-  landfill:            "Landfill",
-  transfer_station:    "Transfer Station",
-  mrf:                 "MRF / Recycling Center",
-  composting:          "Composting",
-  anaerobic_digestion: "Anaerobic Digestion",
-  waste_to_energy:     "Waste-to-Energy",
-  hazardous_waste:     "Hazardous Waste",
-  cd_facility:         "C&D Facility",
-};
+// Use shared labels — cast to Record<string, string> since facility_type from DB is string
+const TYPE_LABELS = FACILITY_TYPE_LABELS as Record<string, string>;
 
 function haversine(lat1: number, lng1: number, lat2: number, lng2: number): number {
   const R    = 3959;
@@ -242,15 +235,8 @@ export function DisposalMap({ facilities }: { facilities: MapFacility[] }) {
     setGeoError("");
 
     try {
-      const apiKey = process.env.NEXT_PUBLIC_ORS_API_KEY;
-      if (!apiKey) {
-        setGeoError("Geocoding API key not configured.");
-        return;
-      }
-
       const res  = await fetch(
-        `https://api.openrouteservice.org/geocode/search?api_key=${apiKey}` +
-        `&text=${encodeURIComponent(addrInput)}&size=1&boundary.country=US`
+        `/api/ors/geocode?text=${encodeURIComponent(addrInput)}`
       );
       const json = await res.json();
       const coords = json?.features?.[0]?.geometry?.coordinates;
