@@ -37,6 +37,7 @@ function parsePageSize(raw: string | undefined): PageSize {
 }
 
 type SearchParams = Promise<{
+  state?: string;   // legacy single 2-letter code (backward compat, e.g. from state landing pages)
   states?: string;  // comma-separated 2-letter codes e.g. "MA,CT,NY"
   type?: string;    // legacy single-type (backward compat)
   types?: string;   // comma-separated facility types e.g. "landfill,mrf"
@@ -415,10 +416,20 @@ export default async function DisposalPage({
   searchParams: SearchParams;
 }) {
   const params = await searchParams;
+
+  // Multi-state: ?states=NJ,NY  (preferred)
+  // Single-state: ?state=NJ     (legacy backward compat — e.g. from state landing page links)
   const selectedStates = (params.states ?? "")
     .split(",")
     .map((s) => s.trim().toUpperCase())
     .filter(Boolean);
+  const legacy_state = (!params.states && params.state)
+    ? params.state.trim().toUpperCase()
+    : undefined;
+  const effectiveStates = selectedStates.length > 0
+    ? selectedStates
+    : legacy_state ? [legacy_state] : [];
+
   // Multi-type: ?types=landfill,mrf  (preferred)
   // Single-type: ?type=landfill      (legacy backward compat)
   const selectedTypes = (params.types ?? "")
@@ -426,18 +437,17 @@ export default async function DisposalPage({
     .map((t) => t.trim().toLowerCase())
     .filter(Boolean);
   const legacy_type = (!params.types && params.type) ? params.type : undefined;
+  const effectiveTypes = selectedTypes.length > 0
+    ? selectedTypes
+    : legacy_type ? [legacy_type] : [];
+
   const active_only = params.active !== "0";
   const q           = params.q || undefined;
   const page        = Math.max(1, parseInt(params.page ?? "1", 10) || 1);
   const pageSize    = parsePageSize(params.per_page);
 
-  // Merge legacy single ?type= into selectedTypes for map/filter consistency
-  const effectiveTypes = selectedTypes.length > 0
-    ? selectedTypes
-    : legacy_type ? [legacy_type] : [];
-
   const filters = {
-    states: selectedStates,
+    states: effectiveStates,
     facility_types: effectiveTypes.length > 0 ? effectiveTypes : undefined,
     active_only,
     q,
@@ -472,7 +482,7 @@ export default async function DisposalPage({
 
       <div className="flex flex-col md:flex-row gap-4 md:gap-6 md:items-start">
         <FilterSidebar
-          selectedStates={selectedStates}
+          selectedStates={effectiveStates}
           selectedTypes={effectiveTypes}
           activeOnly={active_only}
           q={q}
@@ -482,7 +492,7 @@ export default async function DisposalPage({
         <div className="flex-1 min-w-0">
           <Suspense fallback={<ResultsSkeleton />}>
             <DisposalResults
-              states={selectedStates}
+              states={effectiveStates}
               facility_types={effectiveTypes}
               active_only={active_only}
               q={q}

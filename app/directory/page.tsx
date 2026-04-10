@@ -24,6 +24,7 @@ function parsePageSize(raw: string | undefined): PageSize {
 }
 
 type SearchParams = Promise<{
+  state?: string;   // legacy single 2-letter code (backward compat)
   states?: string;  // comma-separated 2-letter codes e.g. "CT,NY,MA"
   service?: string | string[];
   verified?: string;
@@ -119,10 +120,18 @@ export default async function DirectoryPage({
 }) {
   const params = await searchParams;
 
-  const states = (params.states ?? "")
+  // Multi-state: ?states=CT,NY  (preferred)
+  // Single-state: ?state=NY    (legacy backward compat — e.g. from state landing page links)
+  const multiStates = (params.states ?? "")
     .split(",")
     .map((s) => s.trim().toUpperCase())
     .filter(Boolean);
+  const legacy_state = (!params.states && params.state)
+    ? params.state.trim().toUpperCase()
+    : undefined;
+  const states = multiStates.length > 0
+    ? multiStates
+    : legacy_state ? [legacy_state] : [];
 
   const services = params.service
     ? Array.isArray(params.service)

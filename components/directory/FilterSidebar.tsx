@@ -30,7 +30,10 @@ export function FilterSidebar({
 
   const [mobileOpen, setMobileOpen] = useState(false);
 
-  const statesStr = defaultState ? defaultState : (searchParams.get("states") ?? "");
+  // Support both ?states=CT,NY (multi) and legacy ?state=NY (single)
+  const statesStr = defaultState
+    ? defaultState
+    : (searchParams.get("states") ?? searchParams.get("state") ?? "");
   const selectedStates = statesStr ? statesStr.split(",").filter(Boolean) : [];
   const services = searchParams.getAll("service");
   const verified = searchParams.get("verified") === "1";
