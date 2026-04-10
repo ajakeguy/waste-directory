@@ -151,38 +151,11 @@ def fred_csv_fetch(series_id: str) -> tuple[str, float] | None:
 
 
 # ---------------------------------------------------------------------------
-# EIA fetches
+# EIA fetches (only ULSD diesel — WTI and Henry Hub moved to FRED)
 # ---------------------------------------------------------------------------
 
-def fetch_wti_crude():
-    """WTI Crude Oil spot price (daily)."""
-    print("\n[EIA] WTI Crude Oil")
-    data = eia_fetch(
-        "/petroleum/pri/spt/data/",
-        {
-            "frequency":          "daily",
-            "data[]":             "value",
-            "facets[series][]":   "RCLC1",
-        },
-    )
-    if not data:
-        return
-    rows = data.get("response", {}).get("data", [])
-    if not rows:
-        print("  WARN: No data returned")
-        return
-    # Find the first row with a non-null value
-    for row in rows:
-        val = row.get("value")
-        if val is not None:
-            period = row.get("period")  # YYYY-MM-DD
-            upsert_price("wti_crude", float(val), "$/barrel", period, "EIA")
-            return
-    print("  WARN: All returned rows have null values")
-
-
 def fetch_ulsd_diesel():
-    """ULSD Diesel national average (weekly)."""
+    """ULSD Diesel national average (weekly) — EIA series EPD2DXL0."""
     print("\n[EIA] ULSD Diesel - National Average")
     data = eia_fetch(
         "/petroleum/pri/gnd/data/",
@@ -203,48 +176,25 @@ def fetch_ulsd_diesel():
         val = row.get("value")
         if val is not None:
             period = row.get("period")
-            # EIA weekly periods may be formatted as YYYY-MM-DD
             upsert_price("ulsd_diesel", float(val), "$/gallon", period, "EIA")
             return
     print("  WARN: All returned rows have null values")
 
 
-def fetch_henry_hub_gas():
-    """Henry Hub Natural Gas spot price (daily)."""
-    print("\n[EIA] Henry Hub Natural Gas")
-    data = eia_fetch(
-        "/natural-gas/pri/sum/data/",
-        {
-            "frequency":          "daily",
-            "data[]":             "value",
-            "facets[series][]":   "RNGC1",
-        },
-    )
-    if not data:
-        return
-    rows = data.get("response", {}).get("data", [])
-    if not rows:
-        print("  WARN: No data returned")
-        return
-    for row in rows:
-        val = row.get("value")
-        if val is not None:
-            period = row.get("period")
-            upsert_price("henry_hub_gas", float(val), "$/MMBtu", period, "EIA")
-            return
-    print("  WARN: All returned rows have null values")
-
-
 def fetch_electricity_commercial():
-    """US average commercial electricity price (monthly, cents/kWh)."""
+    """US average commercial electricity price (monthly, cents/kWh).
+
+    Fixed facet: sectorid=COM (not sectorName=commercial — that param is ignored).
+    """
     print("\n[EIA] US Commercial Electricity Price")
     data = eia_fetch(
         "/electricity/retail-sales/data/",
         {
-            "frequency":              "monthly",
-            "data[]":                 "price",
-            "facets[sectorName][]":   "commercial",
-            "facets[stateid][]":      "US",
+            "frequency":            "monthly",
+            "data[]":               "price",
+            "facets[sectorid][]":   "COM",
+            "facets[stateid][]":    "US",
+            "length":               3,
         },
     )
     if not data:
@@ -265,11 +215,29 @@ def fetch_electricity_commercial():
 
 
 # ---------------------------------------------------------------------------
-# FRED fetches
+# FRED fetches (WTI, Henry Hub, steel scrap, aluminum)
 # ---------------------------------------------------------------------------
 
+def fetch_wti_crude():
+    """WTI Crude Oil spot price (daily) — FRED series DCOILWTICO."""
+    print("\n[FRED] WTI Crude Oil (DCOILWTICO)")
+    result = fred_csv_fetch("DCOILWTICO")
+    if result:
+        period, value = result
+        upsert_price("wti_crude", value, "$/barrel", period, "FRED")
+
+
+def fetch_henry_hub_gas():
+    """Henry Hub Natural Gas spot price (daily) — FRED series DHHNGSP."""
+    print("\n[FRED] Henry Hub Natural Gas (DHHNGSP)")
+    result = fred_csv_fetch("DHHNGSP")
+    if result:
+        period, value = result
+        upsert_price("henry_hub_gas", value, "$/MMBtu", period, "FRED")
+
+
 def fetch_steel_scrap():
-    """Steel scrap HMS #1 price index (monthly)."""
+    """Steel scrap HMS #1 price index (monthly) — FRED series WPU101707."""
     print("\n[FRED] Steel Scrap HMS #1 (WPU101707)")
     result = fred_csv_fetch("WPU101707")
     if result:
@@ -278,7 +246,7 @@ def fetch_steel_scrap():
 
 
 def fetch_aluminum_lme():
-    """LME Aluminum price (monthly, USD/metric ton)."""
+    """LME Aluminum price (monthly, USD/metric ton) — FRED series PALUMUSDM."""
     print("\n[FRED] Aluminum LME Price (PALUMUSDM)")
     result = fred_csv_fetch("PALUMUSDM")
     if result:
@@ -338,13 +306,13 @@ if __name__ == "__main__":
     print(f"Run time: {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}")
     print("=" * 60)
 
-    # EIA feeds
-    fetch_wti_crude()
+    # EIA feeds (diesel + electricity)
     fetch_ulsd_diesel()
-    fetch_henry_hub_gas()
     fetch_electricity_commercial()
 
-    # FRED feeds
+    # FRED feeds (WTI, Henry Hub, steel scrap, aluminum)
+    fetch_wti_crude()
+    fetch_henry_hub_gas()
     fetch_steel_scrap()
     fetch_aluminum_lme()
 
