@@ -15,6 +15,7 @@ import { Badge } from "@/components/ui/badge";
 import { getDisposalFacilityBySlug } from "@/lib/data/disposal";
 import { createClient } from "@/lib/supabase/server";
 import { DisposalSaveButton } from "@/components/disposal/DisposalSaveButton";
+import { FacilityMap } from "@/components/disposal/FacilityMap";
 import {
   FACILITY_TYPE_LABELS,
   FACILITY_TYPE_COLORS,
@@ -293,6 +294,9 @@ export default async function DisposalFacilityPage({ params }: Props) {
           <p className="text-sm text-gray-600 leading-relaxed">{facility.notes}</p>
         </div>
       )}
+
+      {/* Location map */}
+      <FacilityMap facility={facility} />
     </div>
   );
 }

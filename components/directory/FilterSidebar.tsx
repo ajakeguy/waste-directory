@@ -172,6 +172,34 @@ export function FilterSidebar({
             </span>
           </label>
         </div>
+
+        {/* Per page */}
+        <div className="pt-4 border-t border-gray-100">
+          <p className="text-xs font-semibold uppercase tracking-wide text-gray-500 mb-2">
+            Per page
+          </p>
+          <div className="flex gap-1">
+            {([25, 50, 100] as const).map((n) => {
+              const current = parseInt(searchParams.get("per_page") ?? "25", 10);
+              const active = (isNaN(current) ? 25 : current) === n;
+              return (
+                <button
+                  key={n}
+                  onClick={() =>
+                    updateParams({ per_page: n !== 25 ? String(n) : null, page: null })
+                  }
+                  className={`flex-1 text-center text-sm px-2 py-1.5 rounded-lg transition-colors ${
+                    active
+                      ? "bg-[#2D6A4F]/10 text-[#2D6A4F] font-medium"
+                      : "text-gray-600 hover:bg-gray-100"
+                  }`}
+                >
+                  {n}
+                </button>
+              );
+            })}
+          </div>
+        </div>
       </div>
     </aside>
   );

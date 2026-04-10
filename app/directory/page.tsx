@@ -15,7 +15,13 @@ export const metadata: Metadata = {
     "Find licensed waste haulers across the Northeast. Filter by state, service type, verified status, and more.",
 };
 
-const PAGE_SIZE = 25;
+const VALID_PAGE_SIZES = [25, 50, 100] as const;
+type PageSize = (typeof VALID_PAGE_SIZES)[number];
+
+function parsePageSize(raw: string | undefined): PageSize {
+  const n = parseInt(raw ?? "25", 10);
+  return (VALID_PAGE_SIZES as readonly number[]).includes(n) ? (n as PageSize) : 25;
+}
 
 type SearchParams = Promise<{
   state?: string;
@@ -23,6 +29,7 @@ type SearchParams = Promise<{
   verified?: string;
   q?: string;
   page?: string;
+  per_page?: string;
 }>;
 
 function ResultsSkeleton() {
@@ -53,6 +60,7 @@ async function DirectoryResults({
   q,
   userId,
   page,
+  pageSize,
 }: {
   state?: string;
   services: string[];
@@ -60,9 +68,10 @@ async function DirectoryResults({
   q?: string;
   userId: string | null;
   page: number;
+  pageSize: PageSize;
 }) {
   const [{ data: organizations, count: total }, savedOrgIds] = await Promise.all([
-    getOrganizationsPaginated({ state, services, verified, q }, page, PAGE_SIZE),
+    getOrganizationsPaginated({ state, services, verified, q }, page, pageSize),
     userId ? getSavedOrgIds(userId) : Promise.resolve(new Set<string>()),
   ]);
 
@@ -79,8 +88,8 @@ async function DirectoryResults({
     );
   }
 
-  const from = (page - 1) * PAGE_SIZE + 1;
-  const to = Math.min(page * PAGE_SIZE, total);
+  const from = (page - 1) * pageSize + 1;
+  const to = Math.min(page * pageSize, total);
 
   return (
     <div className="space-y-3">
@@ -97,7 +106,7 @@ async function DirectoryResults({
         />
       ))}
       <Suspense fallback={null}>
-        <Pagination page={page} pageSize={PAGE_SIZE} total={total} />
+        <Pagination page={page} pageSize={pageSize} total={total} />
       </Suspense>
     </div>
   );
@@ -117,6 +126,7 @@ export default async function DirectoryPage({
     : [];
 
   const page = Math.max(1, parseInt(params.page ?? "1", 10) || 1);
+  const pageSize = parsePageSize(params.per_page);
 
   // Get current user for saved-state display
   const supabase = await createClient();
@@ -158,6 +168,7 @@ export default async function DirectoryPage({
               q={params.q}
               userId={user?.id ?? null}
               page={page}
+              pageSize={pageSize}
             />
           </Suspense>
         </div>
