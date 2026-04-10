@@ -112,32 +112,14 @@ def main() -> None:
     if args.state:
         q = q.eq("state", args.state.upper())
 
-    res  = q.limit(args.limit * 2).execute()   # fetch extra; will dedupe + cap
+    res  = q.limit(args.limit * 2).execute()
     rows = res.data or []
 
-    # Also catch facilities where address is NULL but city exists
-    q2 = (
-        supabase.table("disposal_facilities")
-        .select("id, name, address, city, state, zip")
-        .is_("lat",     "null")
-        .is_("address", "null")
-        .not_("city", "is", "null")
-    )
-    if args.state:
-        q2 = q2.eq("state", args.state.upper())
-
-    res2  = q2.limit(args.limit * 2).execute()
-    rows2 = res2.data or []
-
-    # Combine + deduplicate by id
-    seen: set[str] = set()
-    facilities: list[dict] = []
-    for row in rows + rows2:
-        if row["id"] not in seen:
-            seen.add(row["id"])
-            facilities.append(row)
-
-    facilities = facilities[: args.limit]
+    # Keep only rows that have at least address or city to geocode
+    facilities = [
+        r for r in rows
+        if r.get("address") or r.get("city")
+    ][: args.limit]
     print(f"Found {len(facilities)} facilities missing coordinates "
           f"({'dry run' if args.dry_run else 'will update'})")
 
@@ -165,7 +147,7 @@ def main() -> None:
 
         if result:
             lat, lng = result
-            print(f"    → ({lat:.6f}, {lng:.6f})")
+            print(f"    ->({lat:.6f}, {lng:.6f})")
             if not args.dry_run:
                 supabase.table("disposal_facilities") \
                     .update({"lat": lat, "lng": lng}) \
@@ -173,7 +155,7 @@ def main() -> None:
                     .execute()
             success += 1
         else:
-            print(f"    → FAILED / out-of-range")
+            print(f"    ->FAILED / out-of-range")
             failed += 1
 
         time.sleep(RATE_LIMIT_DELAY)

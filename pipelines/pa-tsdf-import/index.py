@@ -33,8 +33,7 @@ Required env vars:
 import os
 import re
 import sys
-import json
-from datetime import datetime
+from datetime import datetime, UTC
 
 import requests
 from bs4 import BeautifulSoup
@@ -177,8 +176,9 @@ def scrape_tsdfs(supabase: Client) -> None:
         if not facility_name:
             continue
 
-        # Skip inactive facilities
-        if facility_name.strip().lower() in SKIP_NAMES:
+        # Skip inactive facilities (check if any skip keyword is in the name)
+        name_lower = facility_name.strip().lower()
+        if any(skip in name_lower for skip in SKIP_NAMES):
             print(f"  SKIP (inactive): {facility_name}")
             skipped += 1
             continue
@@ -186,16 +186,15 @@ def scrape_tsdfs(supabase: Client) -> None:
         # Parse address/phone
         address, city, zip_code, state_code, phone = parse_address_phone(addr_phone)
 
-        # Build license_metadata
-        license_metadata: dict = {}
-        if epa_id:
-            license_metadata["pa_epa_id"] = epa_id
+        # Build notes from county / municipality / facility info
+        notes_parts = []
         if county:
-            license_metadata["pa_county"] = county
+            notes_parts.append(f"County: {county}")
         if municipality:
-            license_metadata["pa_municipality"] = municipality
+            notes_parts.append(f"Municipality: {municipality}")
         if facility_info:
-            license_metadata["pa_facility_info"] = facility_info
+            notes_parts.append(f"Facility Info: {facility_info}")
+        notes = " | ".join(notes_parts) or None
 
         slug = make_slug(facility_name, state_code or "PA", supabase)
 
@@ -208,6 +207,8 @@ def scrape_tsdfs(supabase: Client) -> None:
             "state":         state_code or "PA",
             "zip":           zip_code,
             "phone":         phone,
+            "permit_number": epa_id or None,
+            "notes":         notes,
             "verified":      True,
             "active":        True,
             "data_source":   DATA_SOURCE,
@@ -218,9 +219,8 @@ def scrape_tsdfs(supabase: Client) -> None:
             "accepts_hazardous":    True,
             "accepts_special_waste":False,
             "service_area_states":  [state_code or "PA"],
-            "license_metadata":     license_metadata if license_metadata else None,
-            "created_at":    datetime.utcnow().isoformat(),
-            "updated_at":    datetime.utcnow().isoformat(),
+            "created_at":    datetime.now(UTC).isoformat(),
+            "updated_at":    datetime.now(UTC).isoformat(),
         }
         records.append(record)
         print(f"  + {facility_name} | EPA: {epa_id} | {city}, {state_code}")
