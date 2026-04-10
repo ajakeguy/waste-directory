@@ -55,7 +55,7 @@ const INPUT_COSTS: CommodityConfig[] = [
     icon: Droplets,
     whyItMatters:
       "Crude oil is the upstream driver of diesel prices. Rising crude signals fuel cost increases 2-4 weeks ahead, giving operators time to adjust.",
-    source: "EIA — Updated Daily",
+    source: "FRED — Updated Daily",
     isManual: false,
   },
   {
@@ -64,7 +64,7 @@ const INPUT_COSTS: CommodityConfig[] = [
     icon: Flame,
     whyItMatters:
       "Natural gas powers transfer station equipment, processing facilities, and WTE plants. Also the price benchmark for RNG offtake contracts.",
-    source: "EIA — Updated Daily",
+    source: "FRED — Updated Daily",
     isManual: false,
   },
   {
@@ -189,6 +189,58 @@ function formatDate(iso: string): string {
   } catch {
     return iso;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Sparkline
+// ---------------------------------------------------------------------------
+
+function Sparkline({
+  data,
+  color,
+}: {
+  data: number[];       // newest-first; will be reversed for L→R display
+  color: "red" | "green";
+}) {
+  if (data.length < 2) return null;
+
+  const W = 120, H = 36, PAD = 3;
+  // Reverse so oldest is left, newest is right
+  const pts = [...data].reverse();
+  const min = Math.min(...pts);
+  const max = Math.max(...pts);
+  const range = max - min || 1;
+
+  const toX = (i: number) =>
+    PAD + (i / (pts.length - 1)) * (W - PAD * 2);
+  const toY = (v: number) =>
+    PAD + ((max - v) / range) * (H - PAD * 2);
+
+  const points = pts.map((v, i) => `${toX(i)},${toY(v)}`).join(" ");
+  const lastX = toX(pts.length - 1);
+  const lastY = toY(pts[pts.length - 1]);
+  const stroke = color === "red" ? "#ef4444" : "#22c55e";
+
+  return (
+    <svg
+      width={W}
+      height={H}
+      viewBox={`0 0 ${W} ${H}`}
+      className="overflow-visible"
+      aria-hidden
+    >
+      <polyline
+        points={points}
+        fill="none"
+        stroke={stroke}
+        strokeWidth={1.5}
+        strokeLinejoin="round"
+        strokeLinecap="round"
+        opacity={0.65}
+      />
+      <circle cx={lastX} cy={lastY} r={2.5} fill={stroke} />
+    </svg>
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -363,12 +415,12 @@ function ContributeModal({
 function PriceCard({
   config,
   current,
-  previous,
+  history,
   tint,
 }: {
   config: CommodityConfig;
   current?: CommodityPrice;
-  previous?: CommodityPrice;
+  history?: CommodityPrice[];   // newest-first, up to 8 entries
   tint: "red" | "green";
 }) {
   const [expanded, setExpanded] = useState(false);
@@ -377,13 +429,17 @@ function PriceCard({
   const Icon = config.icon;
   const hasPrice = current && current.price > 0;
 
-  // Change calculation
+  // Change vs previous period (history[1] = one period older than current)
+  const previous = history && history.length > 1 ? history[1] : undefined;
   let change: number | null = null;
   let changePct: number | null = null;
   if (hasPrice && previous && previous.price > 0) {
     change = current!.price - previous.price;
     changePct = (change / previous.price) * 100;
   }
+
+  // Sparkline data (prices only, newest-first — Sparkline reverses for display)
+  const sparkData = history ? history.map((h) => h.price).filter((p) => p > 0) : [];
 
   const bgTint   = tint === "red"   ? "bg-red-50/40"   : "bg-green-50/40";
   const borderTint = tint === "red" ? "border-red-100"  : "border-green-100";
@@ -461,6 +517,13 @@ function PriceCard({
           )}
         </div>
 
+        {/* Sparkline */}
+        {sparkData.length >= 2 && (
+          <div className="mb-3">
+            <Sparkline data={sparkData} color={tint} />
+          </div>
+        )}
+
         {/* "Why it matters" expandable */}
         <div className="flex-1 mb-3">
           <button
@@ -506,13 +569,12 @@ function PriceCard({
 // ---------------------------------------------------------------------------
 
 type Props = {
-  latest:   CommodityPrice[];
-  previous: CommodityPrice[];
+  latest:  CommodityPrice[];
+  history: Record<string, CommodityPrice[]>;  // newest-first, up to 8 per key
 };
 
-export function PricesDashboard({ latest, previous }: Props) {
+export function PricesDashboard({ latest, history }: Props) {
   const byKey = Object.fromEntries(latest.map((p) => [p.commodity_key, p]));
-  const prevByKey = Object.fromEntries(previous.map((p) => [p.commodity_key, p]));
 
   // Most recent update across all live commodities
   const lastUpdated = latest
@@ -556,7 +618,7 @@ export function PricesDashboard({ latest, previous }: Props) {
                 key={cfg.key}
                 config={cfg}
                 current={byKey[cfg.key]}
-                previous={prevByKey[cfg.key]}
+                history={history[cfg.key]}
                 tint="red"
               />
             ))}
@@ -578,7 +640,7 @@ export function PricesDashboard({ latest, previous }: Props) {
                 key={cfg.key}
                 config={cfg}
                 current={byKey[cfg.key]}
-                previous={prevByKey[cfg.key]}
+                history={history[cfg.key]}
                 tint="green"
               />
             ))}

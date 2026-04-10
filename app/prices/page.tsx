@@ -19,85 +19,59 @@ export type CommodityPrice = {
   source: string;
 };
 
-async function getPrices(): Promise<CommodityPrice[]> {
+const COMMODITY_KEYS = [
+  "ulsd_diesel",
+  "wti_crude",
+  "henry_hub_gas",
+  "electricity_commercial",
+  "steel_scrap_hms1",
+  "aluminum_lme",
+  "occ_cardboard",
+  "mixed_paper",
+  "pet_plastic",
+  "hdpe_plastic",
+  "aluminum_cans",
+  "glass_cullet",
+  "compost",
+  "rng",
+] as const;
+
+const HISTORY_POINTS = 8; // how many data points to keep per commodity
+
+async function getPricesWithHistory(): Promise<{
+  latest: CommodityPrice[];
+  history: Record<string, CommodityPrice[]>;
+}> {
   const supabase = await createClient();
 
-  // For each commodity_key, get the most recent row.
-  // We use a subquery-equivalent: fetch the most recent 2 rows per key,
-  // then the client picks [0]. Supabase doesn't have DISTINCT ON, so we
-  // fetch with order by key+date and deduplicate in JS.
-  const KEYS = [
-    "ulsd_diesel",
-    "wti_crude",
-    "henry_hub_gas",
-    "electricity_commercial",
-    "steel_scrap_hms1",
-    "occ_cardboard",
-    "mixed_paper",
-    "pet_plastic",
-    "hdpe_plastic",
-    "aluminum_cans",
-    "glass_cullet",
-    "compost",
-    "rng",
-    "aluminum_lme",
-  ];
-
+  // Single query — fetch all rows for all keys, sorted newest first.
+  // We keep up to HISTORY_POINTS rows per key in JS (no DISTINCT ON needed).
   const { data } = await supabase
     .from("commodity_prices")
     .select("commodity_key, price, unit, period_date, source")
-    .in("commodity_key", KEYS)
+    .in("commodity_key", COMMODITY_KEYS)
+    .order("commodity_key", { ascending: true })
     .order("period_date", { ascending: false });
 
-  if (!data) return [];
+  if (!data) return { latest: [], history: {} };
 
-  // Deduplicate: keep the most recent row per commodity_key
-  const seen = new Set<string>();
-  const latest: CommodityPrice[] = [];
-  for (const row of data) {
-    if (!seen.has(row.commodity_key)) {
-      seen.add(row.commodity_key);
-      latest.push(row as CommodityPrice);
+  // Group by commodity_key, newest-first, capped at HISTORY_POINTS
+  const grouped: Record<string, CommodityPrice[]> = {};
+  for (const row of data as CommodityPrice[]) {
+    if (!grouped[row.commodity_key]) grouped[row.commodity_key] = [];
+    if (grouped[row.commodity_key].length < HISTORY_POINTS) {
+      grouped[row.commodity_key].push(row);
     }
   }
 
-  // Also fetch previous period for each key (for change indicators)
-  // We'll include up to 2 rows per key and let the client calculate change
-  const prev: CommodityPrice[] = [];
-  for (const row of data) {
-    if (prev.filter((r) => r.commodity_key === row.commodity_key).length === 0
-        && latest.find((l) => l.commodity_key === row.commodity_key && l.period_date !== row.period_date)) {
-      prev.push(row as CommodityPrice);
-    }
-  }
+  // Latest = most recent row per commodity
+  const latest = Object.values(grouped).map((rows) => rows[0]);
 
-  return latest;
-}
-
-async function getPreviousPrices(latest: CommodityPrice[]): Promise<CommodityPrice[]> {
-  if (latest.length === 0) return [];
-  const supabase = await createClient();
-
-  const prev: CommodityPrice[] = [];
-  for (const item of latest) {
-    const { data } = await supabase
-      .from("commodity_prices")
-      .select("commodity_key, price, unit, period_date, source")
-      .eq("commodity_key", item.commodity_key)
-      .lt("period_date", item.period_date)
-      .order("period_date", { ascending: false })
-      .limit(1)
-      .maybeSingle();
-    if (data) prev.push(data as CommodityPrice);
-  }
-  return prev;
+  return { latest, history: grouped };
 }
 
 export default async function PricesPage() {
-  const latest = await getPrices();
-  const previous = await getPreviousPrices(latest);
+  const { latest, history } = await getPricesWithHistory();
 
-  return (
-    <PricesDashboard latest={latest} previous={previous} />
-  );
+  return <PricesDashboard latest={latest} history={history} />;
 }

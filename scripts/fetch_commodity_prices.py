@@ -116,16 +116,10 @@ def fred_csv_fetch(series_id: str) -> tuple[str, float] | None:
             print(f"  WARN: FRED returned non-CSV response for {series_id}")
             return None
 
-        # Parse positionally — first col = date, second col = value
-        # This avoids issues with varying column header names
-        lines = [l for l in text.splitlines() if l.strip()]
-        if len(lines) < 2:
-            print(f"  WARN: No data rows for FRED series {series_id}")
-            return None
-
-        valid_rows: list[tuple[str, float]] = []
+        lines = text.split("\n")
+        rows: list[tuple[str, float]] = []
         for line in lines[1:]:   # skip header row
-            parts = line.split(",")
+            parts = line.strip().split(",")
             if len(parts) < 2:
                 continue
             date_val  = parts[0].strip()
@@ -133,16 +127,17 @@ def fred_csv_fetch(series_id: str) -> tuple[str, float] | None:
             if price_val in (".", "", "NA"):
                 continue
             try:
-                valid_rows.append((date_val, float(price_val)))
+                rows.append((date_val, float(price_val)))
             except ValueError:
                 continue
 
-        if not valid_rows:
+        if not rows:
             print(f"  WARN: No valid (non-null) data rows for FRED series {series_id}")
             return None
 
-        # Last valid row = most recent observation
-        period, value = valid_rows[-1]
+        # Sort descending by date string (ISO format sorts lexicographically)
+        rows.sort(key=lambda x: x[0], reverse=True)
+        period, value = rows[0]
         return period, value
 
     except Exception as e:
@@ -224,6 +219,9 @@ def fetch_wti_crude():
     result = fred_csv_fetch("DCOILWTICO")
     if result:
         period, value = result
+        if value > 150 or value < 10:
+            print(f"  WARN: WTI value {value} outside expected range ($10–$150) — skipping (possible stale/bad data)")
+            return
         upsert_price("wti_crude", value, "$/barrel", period, "FRED")
 
 
