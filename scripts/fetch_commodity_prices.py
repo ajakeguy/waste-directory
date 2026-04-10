@@ -6,7 +6,7 @@ into the commodity_prices table in Supabase.
 
 Required environment variables:
   EIA_API_KEY             - Register free at https://www.eia.gov/opendata/register.php
-  NEXT_PUBLIC_SUPABASE_URL
+  SUPABASE_URL            - (preferred) or NEXT_PUBLIC_SUPABASE_URL
   SUPABASE_SERVICE_ROLE_KEY
 
 Usage:
@@ -26,15 +26,23 @@ from supabase import create_client
 # Config
 # ---------------------------------------------------------------------------
 
-EIA_API_KEY   = os.getenv("EIA_API_KEY", "")
-SUPABASE_URL  = os.getenv("NEXT_PUBLIC_SUPABASE_URL", "")
-SUPABASE_KEY  = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
+EIA_API_KEY   = os.environ.get("EIA_API_KEY", "")
+SUPABASE_URL  = (
+    os.environ.get("SUPABASE_URL") or
+    os.environ.get("NEXT_PUBLIC_SUPABASE_URL") or
+    ""
+)
+SUPABASE_KEY  = (
+    os.environ.get("SUPABASE_SERVICE_ROLE_KEY") or
+    os.environ.get("SUPABASE_KEY") or
+    ""
+)
 
 EIA_BASE      = "https://api.eia.gov/v2"
 FRED_CSV_BASE = "https://fred.stlouisfed.org/graph/fredgraph.csv"
 
 if not SUPABASE_URL or not SUPABASE_KEY:
-    print("ERROR: NEXT_PUBLIC_SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are required.")
+    print("ERROR: Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY")
     sys.exit(1)
 
 if not EIA_API_KEY:
