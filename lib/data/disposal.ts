@@ -72,12 +72,13 @@ function applyMaterialsFilter(query: any, materials: string[]): any {
 }
 
 export type DisposalFilters = {
-  state?: string;      // single 2-letter code (legacy/landing pages)
-  states?: string[];   // multi-select — used by directory page
-  facility_type?: string;
+  state?: string;           // single 2-letter code (legacy/landing pages)
+  states?: string[];        // multi-select — used by directory page
+  facility_type?: string;   // legacy single-type (backward compat for map/API)
+  facility_types?: string[]; // multi-select type filter — used by directory page
   active_only?: boolean;
   q?: string;
-  materials?: string[]; // accepted material filter (codes or friendly names)
+  materials?: string[];     // accepted material filter (codes or friendly names)
 };
 
 export async function getDisposalFacilities(
@@ -100,7 +101,9 @@ export async function getDisposalFacilities(
     query = query.contains("service_area_states", [filters.state]);
   }
 
-  if (filters.facility_type) {
+  if (filters.facility_types && filters.facility_types.length > 0) {
+    query = query.in("facility_type", filters.facility_types);
+  } else if (filters.facility_type) {
     query = query.eq("facility_type", filters.facility_type);
   }
 
@@ -145,7 +148,9 @@ export async function getDisposalFacilitiesPaginated(
     query = query.contains("service_area_states", [filters.state]);
   }
 
-  if (filters.facility_type) {
+  if (filters.facility_types && filters.facility_types.length > 0) {
+    query = query.in("facility_type", filters.facility_types);
+  } else if (filters.facility_type) {
     query = query.eq("facility_type", filters.facility_type);
   }
 
@@ -191,7 +196,9 @@ export async function getDisposalFacilitiesForMap(
   } else if (filters.state) {
     query = query.contains("service_area_states", [filters.state]);
   }
-  if (filters.facility_type) {
+  if (filters.facility_types && filters.facility_types.length > 0) {
+    query = query.in("facility_type", filters.facility_types);
+  } else if (filters.facility_type) {
     query = query.eq("facility_type", filters.facility_type);
   }
   if (filters.q) {

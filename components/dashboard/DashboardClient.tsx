@@ -515,7 +515,7 @@ export function DashboardClient({
           </div>
         ) : (
           <div className="space-y-2">
-            {savedFacilities.map((f) => (
+            {savedFacilities.filter((f) => f != null && f.slug).map((f) => (
               <Link
                 key={f.id}
                 href={`/disposal/${f.slug}`}

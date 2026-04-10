@@ -38,7 +38,8 @@ function parsePageSize(raw: string | undefined): PageSize {
 
 type SearchParams = Promise<{
   states?: string;  // comma-separated 2-letter codes e.g. "MA,CT,NY"
-  type?: string;
+  type?: string;    // legacy single-type (backward compat)
+  types?: string;   // comma-separated facility types e.g. "landfill,mrf"
   active?: string;
   q?: string;
   page?: string;
@@ -82,21 +83,21 @@ function ResultsSkeleton() {
 
 async function DisposalResults({
   states,
-  facility_type,
+  facility_types,
   active_only,
   q,
   page,
   pageSize,
 }: {
   states: string[];
-  facility_type?: string;
+  facility_types: string[];
   active_only: boolean;
   q?: string;
   page: number;
   pageSize: PageSize;
 }) {
   const { data: facilities, count: total } = await getDisposalFacilitiesPaginated(
-    { states, facility_type, active_only, q },
+    { states, facility_types: facility_types.length > 0 ? facility_types : undefined, active_only, q },
     page,
     pageSize
   );
@@ -205,13 +206,13 @@ async function DisposalResults({
 
 function FilterSidebar({
   selectedStates,
-  selectedType,
+  selectedTypes,
   activeOnly,
   q,
   perPage,
 }: {
   selectedStates: string[];
-  selectedType?: string;
+  selectedTypes: string[];
   activeOnly: boolean;
   q?: string;
   perPage: PageSize;
@@ -220,7 +221,7 @@ function FilterSidebar({
     const params = new URLSearchParams();
     const merged: Record<string, string | undefined> = {
       states:   selectedStates.length > 0 ? selectedStates.join(",") : undefined,
-      type:     selectedType,
+      types:    selectedTypes.length > 0 ? selectedTypes.join(",") : undefined,
       active:   activeOnly ? "1" : "0",
       q,
       per_page: perPage !== 25 ? String(perPage) : undefined,
@@ -285,35 +286,70 @@ function FilterSidebar({
         </div>
       </div>
 
-      {/* Facility type */}
+      {/* Facility type — multi-select checkboxes */}
       <div>
-        <h3 className="text-xs font-semibold uppercase tracking-wider text-gray-500 mb-2">
-          Facility Type
-        </h3>
+        <div className="flex items-center justify-between mb-2">
+          <h3 className="text-xs font-semibold uppercase tracking-wider text-gray-500">
+            Facility Type
+          </h3>
+          {selectedTypes.length > 0 && (
+            <Link
+              href={buildUrl({ types: undefined })}
+              className="text-xs text-[#2D6A4F] hover:underline"
+            >
+              Clear
+            </Link>
+          )}
+        </div>
         <div className="space-y-1">
+          {/* "All Types" — clears selection */}
           <Link
-            href={buildUrl({ type: undefined })}
-            className={`block text-sm px-2 py-1.5 rounded-lg transition-colors ${
-              !selectedType
+            href={buildUrl({ types: undefined })}
+            className={`flex items-center gap-2 text-sm px-2 py-1.5 rounded-lg transition-colors ${
+              selectedTypes.length === 0
                 ? "bg-[#2D6A4F]/10 text-[#2D6A4F] font-medium"
                 : "text-gray-600 hover:bg-gray-50"
             }`}
           >
-            All Types
-          </Link>
-          {FACILITY_TYPES.map((t) => (
-            <Link
-              key={t}
-              href={buildUrl({ type: t })}
-              className={`block text-sm px-2 py-1.5 rounded-lg transition-colors ${
-                selectedType === t
-                  ? "bg-[#2D6A4F]/10 text-[#2D6A4F] font-medium"
-                  : "text-gray-600 hover:bg-gray-50"
+            <span
+              className={`size-4 shrink-0 rounded border flex items-center justify-center text-[10px] font-bold ${
+                selectedTypes.length === 0
+                  ? "bg-[#2D6A4F] border-[#2D6A4F] text-white"
+                  : "border-gray-300"
               }`}
             >
-              {FACILITY_TYPE_LABELS[t]}
-            </Link>
-          ))}
+              {selectedTypes.length === 0 ? "✓" : ""}
+            </span>
+            All Types
+          </Link>
+          {FACILITY_TYPES.map((t) => {
+            const isSelected = selectedTypes.includes(t);
+            const nextTypes = isSelected
+              ? selectedTypes.filter((x) => x !== t)
+              : [...selectedTypes, t];
+            return (
+              <Link
+                key={t}
+                href={buildUrl({ types: nextTypes.length > 0 ? nextTypes.join(",") : undefined })}
+                className={`flex items-center gap-2 text-sm px-2 py-1.5 rounded-lg transition-colors ${
+                  isSelected
+                    ? "bg-[#2D6A4F]/10 text-[#2D6A4F] font-medium"
+                    : "text-gray-600 hover:bg-gray-50"
+                }`}
+              >
+                <span
+                  className={`size-4 shrink-0 rounded border flex items-center justify-center text-[10px] font-bold ${
+                    isSelected
+                      ? "bg-[#2D6A4F] border-[#2D6A4F] text-white"
+                      : "border-gray-300"
+                  }`}
+                >
+                  {isSelected ? "✓" : ""}
+                </span>
+                {FACILITY_TYPE_LABELS[t]}
+              </Link>
+            );
+          })}
         </div>
       </div>
 
@@ -383,13 +419,29 @@ export default async function DisposalPage({
     .split(",")
     .map((s) => s.trim().toUpperCase())
     .filter(Boolean);
-  const facility_type = params.type || undefined;
-  const active_only   = params.active !== "0";
-  const q             = params.q || undefined;
-  const page          = Math.max(1, parseInt(params.page ?? "1", 10) || 1);
-  const pageSize      = parsePageSize(params.per_page);
+  // Multi-type: ?types=landfill,mrf  (preferred)
+  // Single-type: ?type=landfill      (legacy backward compat)
+  const selectedTypes = (params.types ?? "")
+    .split(",")
+    .map((t) => t.trim().toLowerCase())
+    .filter(Boolean);
+  const legacy_type = (!params.types && params.type) ? params.type : undefined;
+  const active_only = params.active !== "0";
+  const q           = params.q || undefined;
+  const page        = Math.max(1, parseInt(params.page ?? "1", 10) || 1);
+  const pageSize    = parsePageSize(params.per_page);
 
-  const filters = { states: selectedStates, facility_type, active_only, q };
+  // Merge legacy single ?type= into selectedTypes for map/filter consistency
+  const effectiveTypes = selectedTypes.length > 0
+    ? selectedTypes
+    : legacy_type ? [legacy_type] : [];
+
+  const filters = {
+    states: selectedStates,
+    facility_types: effectiveTypes.length > 0 ? effectiveTypes : undefined,
+    active_only,
+    q,
+  };
 
   // Fetch facilities for map (server-side, passed as props to client component)
   const mapFacilities = await getDisposalFacilitiesForMap(filters);
@@ -421,7 +473,7 @@ export default async function DisposalPage({
       <div className="flex flex-col md:flex-row gap-4 md:gap-6 md:items-start">
         <FilterSidebar
           selectedStates={selectedStates}
-          selectedType={facility_type}
+          selectedTypes={effectiveTypes}
           activeOnly={active_only}
           q={q}
           perPage={pageSize}
@@ -431,7 +483,7 @@ export default async function DisposalPage({
           <Suspense fallback={<ResultsSkeleton />}>
             <DisposalResults
               states={selectedStates}
-              facility_type={facility_type}
+              facility_types={effectiveTypes}
               active_only={active_only}
               q={q}
               page={page}

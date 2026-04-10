@@ -210,12 +210,15 @@ def parse_feature(feature: dict[str, Any]) -> dict[str, Any] | None:
     recycling_raw = attrs.get("RECYCLING_TYPE") or ""
 
     codes    = parse_codes(recycling_raw)
-    accepted = build_accepted_materials(codes)
+    # Only store accepted_materials when we have actual codes; null is cleaner
+    # than {"codes": [], "descriptions": []} for facilities like landfills/MRFs
+    # that have no RECYCLING_TYPE in the ArcGIS data.
+    accepted = build_accepted_materials(codes) if codes else None
     flags    = get_bool_flags(codes, ftype)
 
     # Build a note
     class_label = arcgis_type.replace("Solid Waste Recycling Facility - ", "").replace("Solid Waste ", "")
-    mat_str = ", ".join(accepted.get("descriptions", [])) if codes else ""
+    mat_str = ", ".join(accepted.get("descriptions", [])) if accepted else ""
     notes_parts = [f"NJ DEP: {class_label}."]
     if mat_str:
         notes_parts.append(f"Materials: {mat_str}")
@@ -238,7 +241,7 @@ def parse_feature(feature: dict[str, Any]) -> dict[str, Any] | None:
         "facility_type":     ftype,
         "lat":               lat,
         "lng":               lng,
-        "accepted_materials": accepted,
+        "accepted_materials": accepted,   # None for facilities with no material codes
         "notes":             " ".join(notes_parts),
         **flags,
     }

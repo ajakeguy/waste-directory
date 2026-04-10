@@ -115,9 +115,11 @@ export default async function DashboardPage() {
   >[];
 
   // Saved disposal facilities (latest 20)
+  // NOTE: PostgREST returns the joined table data under the table name as the key,
+  // not the alias. So the key is "disposal_facilities", not "facility".
   type SavedFacilityRow = {
     facility_id: string;
-    facility: Pick<DisposalFacility, "id" | "name" | "slug" | "facility_type" | "city" | "state"> | null;
+    disposal_facilities: Pick<DisposalFacility, "id" | "name" | "slug" | "facility_type" | "city" | "state"> | null;
   };
 
   const { data: savedDisposalRows } = await supabase
@@ -128,8 +130,8 @@ export default async function DashboardPage() {
     .limit(20);
 
   const savedFacilities = ((savedDisposalRows ?? []) as unknown as SavedFacilityRow[])
-    .filter((r) => r.facility !== null)
-    .map((r) => r.facility!);
+    .filter((r) => r.disposal_facilities !== null && r.disposal_facilities?.slug)
+    .map((r) => r.disposal_facilities!);
 
   return (
     <DashboardClient
