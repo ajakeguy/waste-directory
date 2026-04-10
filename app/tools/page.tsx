@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import { MapPin, Route, FileText, CheckCircle2 } from "lucide-react";
+import { MapPin, Route, FileText, CheckCircle2, TrendingUp } from "lucide-react";
 
 export const metadata: Metadata = {
   title: "Industry Tools | waste.markets",
@@ -9,6 +9,22 @@ export const metadata: Metadata = {
 };
 
 const tools = [
+  {
+    icon: TrendingUp,
+    title: "Market Prices",
+    description:
+      "Track diesel, recyclable commodity, and natural gas prices relevant to your operations — updated daily from EIA and FRED public data.",
+    features: [
+      "Diesel & crude oil (EIA daily)",
+      "OCC, plastics, aluminum prices",
+      "Natural gas & electricity rates",
+      "Community price submissions",
+    ],
+    href: "/prices",
+    cta: "View Prices",
+    color: "bg-amber-50 text-amber-600",
+    border: "hover:border-amber-300",
+  },
   {
     icon: Route,
     title: "Route Optimizer",

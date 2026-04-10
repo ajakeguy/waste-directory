@@ -1,0 +1,39 @@
+name: Commodity Prices Sync
+
+# NOTE: This workflow requires the following GitHub repository secrets:
+#   EIA_API_KEY            - Free EIA Open Data API key
+#                            Register at: https://www.eia.gov/opendata/register.php
+#   NEXT_PUBLIC_SUPABASE_URL
+#   SUPABASE_SERVICE_ROLE_KEY
+
+on:
+  # Weekdays at 2pm UTC (10am ET / 7am PT) — shortly after EIA publishes daily data
+  schedule:
+    - cron: "0 14 * * 1-5"
+  # Allow manual runs from the GitHub Actions UI
+  workflow_dispatch:
+
+jobs:
+  fetch-prices:
+    name: Fetch commodity prices from EIA and FRED
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Python dependencies
+        run: pip install requests supabase
+
+      - name: Fetch and upsert commodity prices
+        env:
+          EIA_API_KEY: ${{ secrets.EIA_API_KEY }}
+          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: python scripts/fetch_commodity_prices.py

@@ -58,6 +58,9 @@ export function MobileNav({
             <NavLink href="/disposal" onClose={() => setOpen(false)}>
               Disposal
             </NavLink>
+            <NavLink href="/prices" onClose={() => setOpen(false)}>
+              Prices
+            </NavLink>
             <NavLink href="/tools" onClose={() => setOpen(false)}>
               Tools
             </NavLink>
