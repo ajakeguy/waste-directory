@@ -6,6 +6,9 @@ import { NextRequest, NextResponse } from "next/server";
 const CENSUS_URL =
   "https://geocoding.geo.census.gov/geocoder/locations/onelineaddress";
 
+const NOMINATIM_URL = "https://nominatim.openstreetmap.org/search";
+
+// Census: best for full street addresses
 async function tryCensus(
   address: string
 ): Promise<[number, number] | null> {
@@ -16,7 +19,10 @@ async function tryCensus(
       encodeURIComponent(address) +
       "&benchmark=Public_AR_Current&format=json";
 
-    const res = await fetch(url, { next: { revalidate: 0 } });
+    const res = await fetch(url, {
+      next: { revalidate: 0 },
+      headers: { "User-Agent": "WasteDirectory/1.0 (geocoding proxy)" },
+    });
     if (!res.ok) return null;
 
     const data = await res.json();
@@ -30,6 +36,43 @@ async function tryCensus(
 
     if (typeof lng === "number" && typeof lat === "number") {
       return [lng, lat];
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+// Nominatim: handles city names, landmarks, partial addresses — free, no key
+async function tryNominatim(
+  address: string
+): Promise<[number, number] | null> {
+  try {
+    const url =
+      NOMINATIM_URL +
+      "?q=" +
+      encodeURIComponent(address) +
+      "&format=json&limit=1&countrycodes=us";
+
+    const res = await fetch(url, {
+      next: { revalidate: 0 },
+      headers: {
+        // Nominatim requires a descriptive User-Agent (policy)
+        "User-Agent": "WasteDirectory/1.0 (https://waste.markets; geocoding proxy)",
+        "Accept-Language": "en",
+      },
+    });
+    if (!res.ok) return null;
+
+    const data: unknown[] = await res.json();
+    if (!Array.isArray(data) || data.length === 0) return null;
+
+    const first = data[0] as Record<string, string>;
+    const lat = parseFloat(first?.lat ?? "");
+    const lon = parseFloat(first?.lon ?? "");
+
+    if (isFinite(lat) && isFinite(lon)) {
+      return [lon, lat];
     }
     return null;
   } catch {
@@ -92,13 +135,19 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: "text required" }, { status: 400 });
   }
 
-  // 1. Try Census Bureau (free, no key, no rate limit)
+  // 1. Try Census Bureau (best for full street addresses, free, no rate limit)
   const censusResult = await tryCensus(text);
   if (censusResult) {
     return makeOrsResponse(censusResult);
   }
 
-  // 2. Fallback: Mapbox (if configured)
+  // 2. Nominatim / OpenStreetMap (handles city names, partial addresses, free)
+  const nominatimResult = await tryNominatim(text);
+  if (nominatimResult) {
+    return makeOrsResponse(nominatimResult);
+  }
+
+  // 3. Mapbox (if configured — commercial fallback)
   const mapboxToken = process.env.MAPBOX_ACCESS_TOKEN;
   if (mapboxToken) {
     const mapboxResult = await tryMapbox(text, mapboxToken);
@@ -107,6 +156,6 @@ export async function GET(request: NextRequest) {
     }
   }
 
-  // 3. No match found — return empty features array (ORS-compatible)
+  // 4. No match found — return empty features array (ORS-compatible)
   return NextResponse.json({ features: [] });
 }
