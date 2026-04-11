@@ -1,0 +1,7 @@
+User-agent: *
+Allow: /
+Disallow: /api/
+Disallow: /api/disposal
+Disallow: /api/haulers
+
+Sitemap: https://waste.markets/sitemap.xml
