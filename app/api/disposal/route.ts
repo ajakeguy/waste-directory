@@ -29,12 +29,15 @@ export async function GET(req: NextRequest) {
     materials,
   };
 
-  // Map requests: return ALL matching facilities with coordinates — no pagination cap.
-  // Uses chunked fetching internally to handle datasets of any size.
+  // Map requests: return facilities with coordinates, capped to prevent IO abuse.
+  // Vercel CDN caches for 5 min; bots get stale-while-revalidate for 10 min.
   const isMapRequest = searchParams.get("map") === "true";
   if (isMapRequest) {
     const data = await getDisposalFacilitiesForMap(filters);
-    return NextResponse.json({ data, count: data.length });
+    return NextResponse.json(
+      { data, count: data.length },
+      { headers: { "Cache-Control": "public, s-maxage=300, stale-while-revalidate=600" } }
+    );
   }
 
   // Paginated list requests: honour per_page (capped at 100 for safety)

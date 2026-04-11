@@ -170,6 +170,12 @@ export async function getDisposalFacilitiesPaginated(
   return { data: data ?? [], count: count ?? 0 };
 }
 
+// Hard cap for map queries — single query, no while loop.
+// 2 000 covers any individual state; the unfiltered "all states" view
+// is intentionally capped at 500 to protect Supabase IO from bot crawlers.
+const MAP_CAP_FILTERED   = 2000;
+const MAP_CAP_UNFILTERED = 500;
+
 export async function getDisposalFacilitiesForMap(
   filters: DisposalFilters = {}
 ): Promise<
@@ -180,55 +186,47 @@ export async function getDisposalFacilitiesForMap(
 > {
   const supabase = await createClient();
 
-  // Build a fresh filter query each call — no range yet, added per chunk below.
-  // A new builder is needed each iteration because Supabase's builder is stateful.
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  function buildBaseQuery(): any {
-    let q = supabase
-      .from("disposal_facilities")
-      .select("id, name, slug, city, state, facility_type, lat, lng, phone")
-      .not("lat", "is", null)
-      .not("lng", "is", null)
-      .order("name");
+  const hasFilter =
+    (filters.states && filters.states.length > 0) ||
+    !!filters.state ||
+    !!filters.facility_type ||
+    (filters.facility_types && filters.facility_types.length > 0) ||
+    !!filters.q;
 
-    if (filters.active_only !== false) q = q.eq("active", true);
-    if (filters.states && filters.states.length > 0) {
-      q = q.overlaps("service_area_states", filters.states);
-    } else if (filters.state) {
-      q = q.contains("service_area_states", [filters.state]);
-    }
-    if (filters.facility_types && filters.facility_types.length > 0) {
-      q = q.in("facility_type", filters.facility_types);
-    } else if (filters.facility_type) {
-      q = q.eq("facility_type", filters.facility_type);
-    }
-    if (filters.q) q = q.ilike("name", `%${filters.q}%`);
-    if (filters.materials && filters.materials.length > 0) {
-      q = applyMaterialsFilter(q, filters.materials);
-    }
-    return q;
+  const cap = hasFilter ? MAP_CAP_FILTERED : MAP_CAP_UNFILTERED;
+
+  let query = supabase
+    .from("disposal_facilities")
+    .select("id, name, slug, city, state, facility_type, lat, lng, phone")
+    .not("lat", "is", null)
+    .not("lng", "is", null)
+    .eq("active", true)
+    .order("name")
+    .limit(cap);
+
+  if (filters.states && filters.states.length > 0) {
+    query = query.overlaps("service_area_states", filters.states);
+  } else if (filters.state) {
+    query = query.contains("service_area_states", [filters.state]);
+  }
+  if (filters.facility_types && filters.facility_types.length > 0) {
+    query = query.in("facility_type", filters.facility_types);
+  } else if (filters.facility_type) {
+    query = query.eq("facility_type", filters.facility_type);
+  }
+  if (filters.q) {
+    query = query.ilike("name", `%${filters.q}%`);
+  }
+  if (filters.materials && filters.materials.length > 0) {
+    query = applyMaterialsFilter(query, filters.materials);
   }
 
-  // Fetch in 1 000-row chunks to bypass Supabase's per-request row cap.
-  // This handles datasets of any size without a hard ceiling.
-  const CHUNK = 1000;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  let allData: any[] = [];
-  let offset = 0;
-
-  while (true) {
-    const { data, error } = await buildBaseQuery().range(offset, offset + CHUNK - 1);
-    if (error) {
-      console.error("Error fetching disposal facilities for map:", error);
-      break;
-    }
-    if (!data || data.length === 0) break;
-    allData = allData.concat(data);
-    if (data.length < CHUNK) break;  // last page — no more rows
-    offset += CHUNK;
+  const { data, error } = await query;
+  if (error) {
+    console.error("Error fetching disposal facilities for map:", error);
+    return [];
   }
-
-  return allData as Pick<
+  return (data ?? []) as Pick<
     DisposalFacility,
     "id" | "name" | "slug" | "city" | "state" | "facility_type" | "lat" | "lng" | "phone"
   >[];
