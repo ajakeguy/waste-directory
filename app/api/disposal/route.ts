@@ -29,22 +29,24 @@ export async function GET(req: NextRequest) {
     materials,
   };
 
-  // Map requests: return facilities with coordinates, capped to prevent IO abuse.
-  // Vercel CDN caches for 5 min; bots get stale-while-revalidate for 10 min.
+  // Map requests: capped payload, 1-hour CDN cache to absorb bot traffic.
   const isMapRequest = searchParams.get("map") === "true";
   if (isMapRequest) {
     const data = await getDisposalFacilitiesForMap(filters);
     return NextResponse.json(
       { data, count: data.length },
-      { headers: { "Cache-Control": "public, s-maxage=300, stale-while-revalidate=600" } }
+      { headers: { "Cache-Control": "public, s-maxage=3600, stale-while-revalidate=7200" } }
     );
   }
 
-  // Paginated list requests: honour per_page (capped at 100 for safety)
+  // Paginated list requests: 60-second CDN cache, per_page capped at 100.
   const page     = Math.max(1, parseInt(searchParams.get("page")     ?? "1",  10) || 1);
   const per_page = Math.min(100, parseInt(searchParams.get("per_page") ?? "25", 10) || 25);
 
   const { data, count } = await getDisposalFacilitiesPaginated(filters, page, per_page);
 
-  return NextResponse.json({ data, count, page, per_page });
+  return NextResponse.json(
+    { data, count, page, per_page },
+    { headers: { "Cache-Control": "public, s-maxage=60, stale-while-revalidate=300" } }
+  );
 }

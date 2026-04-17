@@ -170,20 +170,19 @@ export async function getDisposalFacilitiesPaginated(
   return { data: data ?? [], count: count ?? 0 };
 }
 
-// Hard cap for map queries — single query, no while loop.
-// 2 000 covers any individual state; the unfiltered "all states" view
-// is intentionally capped at 500 to protect Supabase IO from bot crawlers.
-const MAP_CAP_FILTERED   = 2000;
-const MAP_CAP_UNFILTERED = 500;
+// Emergency egress caps — kept intentionally tight to protect Supabase IO.
+// Unfiltered (all states) shows a representative sample only.
+// Filtered (single state or type) covers the largest real-world state dataset.
+const MAP_CAP_FILTERED   = 500;
+const MAP_CAP_UNFILTERED = 100;
+
+// Minimal field set for map markers — omit city/state/phone to reduce payload.
+// Popup content is limited to name, type badge, and "View details" link.
+export type MapMarker = Pick<DisposalFacility, "id" | "name" | "slug" | "facility_type" | "lat" | "lng">;
 
 export async function getDisposalFacilitiesForMap(
   filters: DisposalFilters = {}
-): Promise<
-  Pick<
-    DisposalFacility,
-    "id" | "name" | "slug" | "city" | "state" | "facility_type" | "lat" | "lng" | "phone"
-  >[]
-> {
+): Promise<MapMarker[]> {
   const supabase = await createClient();
 
   const hasFilter =
@@ -195,41 +194,44 @@ export async function getDisposalFacilitiesForMap(
 
   const cap = hasFilter ? MAP_CAP_FILTERED : MAP_CAP_UNFILTERED;
 
-  let query = supabase
-    .from("disposal_facilities")
-    .select("id, name, slug, city, state, facility_type, lat, lng, phone")
-    .not("lat", "is", null)
-    .not("lng", "is", null)
-    .eq("active", true)
-    .order("name")
-    .limit(cap);
+  try {
+    let query = supabase
+      .from("disposal_facilities")
+      .select("id, name, slug, facility_type, lat, lng")
+      .not("lat", "is", null)
+      .not("lng", "is", null)
+      .eq("active", true)
+      .order("name")
+      .limit(cap);
 
-  if (filters.states && filters.states.length > 0) {
-    query = query.overlaps("service_area_states", filters.states);
-  } else if (filters.state) {
-    query = query.contains("service_area_states", [filters.state]);
-  }
-  if (filters.facility_types && filters.facility_types.length > 0) {
-    query = query.in("facility_type", filters.facility_types);
-  } else if (filters.facility_type) {
-    query = query.eq("facility_type", filters.facility_type);
-  }
-  if (filters.q) {
-    query = query.ilike("name", `%${filters.q}%`);
-  }
-  if (filters.materials && filters.materials.length > 0) {
-    query = applyMaterialsFilter(query, filters.materials);
-  }
+    if (filters.states && filters.states.length > 0) {
+      query = query.overlaps("service_area_states", filters.states);
+    } else if (filters.state) {
+      query = query.contains("service_area_states", [filters.state]);
+    }
+    if (filters.facility_types && filters.facility_types.length > 0) {
+      query = query.in("facility_type", filters.facility_types);
+    } else if (filters.facility_type) {
+      query = query.eq("facility_type", filters.facility_type);
+    }
+    if (filters.q) {
+      query = query.ilike("name", `%${filters.q}%`);
+    }
+    if (filters.materials && filters.materials.length > 0) {
+      query = applyMaterialsFilter(query, filters.materials);
+    }
 
-  const { data, error } = await query;
-  if (error) {
-    console.error("Error fetching disposal facilities for map:", error);
+    const { data, error } = await query;
+    if (error) {
+      console.error("Error fetching disposal facilities for map:", error);
+      return [];
+    }
+    return (data ?? []) as MapMarker[];
+  } catch (err) {
+    // Graceful degradation — if Supabase is rate-limited or down, show empty map
+    console.error("Map query failed, returning empty:", err);
     return [];
   }
-  return (data ?? []) as Pick<
-    DisposalFacility,
-    "id" | "name" | "slug" | "city" | "state" | "facility_type" | "lat" | "lng" | "phone"
-  >[];
 }
 
 export async function getDisposalFacilityBySlug(

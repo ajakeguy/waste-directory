@@ -48,12 +48,6 @@ export default async function Header() {
             Disposal
           </Link>
           <Link
-            href="/prices"
-            className="text-sm font-medium text-white/90 hover:text-white transition-colors"
-          >
-            Prices
-          </Link>
-          <Link
             href="/tools"
             className="text-sm font-medium text-white/90 hover:text-white transition-colors"
           >
@@ -64,12 +58,6 @@ export default async function Header() {
             className="text-sm font-medium text-white/90 hover:text-white transition-colors"
           >
             Marketplace
-          </Link>
-          <Link
-            href="/news"
-            className="text-sm font-medium text-white/90 hover:text-white transition-colors"
-          >
-            News
           </Link>
         </nav>
 

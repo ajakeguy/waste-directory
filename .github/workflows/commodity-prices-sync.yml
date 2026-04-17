@@ -7,9 +7,9 @@ name: Commodity Prices Sync
 #   SUPABASE_SERVICE_ROLE_KEY
 
 on:
-  # Weekdays at 2pm UTC (10am ET / 7am PT) — shortly after EIA publishes daily data
-  schedule:
-    - cron: "0 14 * * 1-5"
+  # PAUSED — re-enable when Supabase egress crisis is resolved
+  # schedule:
+  #   - cron: "0 14 * * 1-5"
   # Allow manual runs from the GitHub Actions UI
   workflow_dispatch:
 

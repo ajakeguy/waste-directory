@@ -17,12 +17,12 @@ export type MapFacility = {
   id: string;
   name: string;
   slug: string;
-  city: string | null;
-  state: string | null;
+  city?: string | null;
+  state?: string | null;
   facility_type: string;
   lat: number;
   lng: number;
-  phone: string | null;
+  phone?: string | null;
 };
 
 type GeoFilter = {
