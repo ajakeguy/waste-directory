@@ -3,63 +3,30 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { MapPin, Phone, CheckCircle } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
-import {
-  getDisposalFacilitiesPaginated,
-  getDisposalFacilitiesForMap,
-} from "@/lib/data/disposal";
+import { getDisposalFacilitiesPaginated } from "@/lib/data/disposal";
 import { createClient } from "@/lib/supabase/server";
 import { Pagination } from "@/components/directory/Pagination";
 import { SearchBar } from "@/components/directory/SearchBar";
 import { DisposalSaveButton } from "@/components/disposal/DisposalSaveButton";
-import { DisposalMap } from "@/components/disposal/DisposalMap";
-import type { MapFacility } from "@/components/disposal/DisposalMap";
-import {
-  FACILITY_TYPE_LABELS,
-  FACILITY_TYPE_COLORS,
-  FACILITY_TYPES,
-} from "@/types";
+import { DisposalFilterDropdowns } from "@/components/disposal/DisposalFilterDropdowns";
+import { FACILITY_TYPE_LABELS, FACILITY_TYPE_COLORS } from "@/types";
 import type { FacilityType } from "@/types";
 
 export const metadata: Metadata = {
-  title: "Disposal Facilities Directory | WasteDirectory",
+  title: "Disposal Facilities Directory | waste.markets",
   description:
     "Find landfills, transfer stations, MRFs, composting facilities, and waste-to-energy plants across the Northeast.",
 };
 
-const VALID_PAGE_SIZES = [25, 50, 100] as const;
-type PageSize = (typeof VALID_PAGE_SIZES)[number];
-
-function parsePageSize(raw: string | undefined): PageSize {
-  const n = parseInt(raw ?? "25", 10);
-  return (VALID_PAGE_SIZES as readonly number[]).includes(n)
-    ? (n as PageSize)
-    : 25;
-}
+// Page always shows 25 results — no user-configurable page size.
+const PAGE_SIZE = 25;
 
 type SearchParams = Promise<{
-  state?: string;   // legacy single 2-letter code (backward compat, e.g. from state landing pages)
-  states?: string;  // comma-separated 2-letter codes e.g. "MA,CT,NY"
-  type?: string;    // legacy single-type (backward compat)
-  types?: string;   // comma-separated facility types e.g. "landfill,mrf"
-  active?: string;
+  state?: string;   // single 2-letter code, e.g. "NY"
+  type?: string;    // single facility type, e.g. "landfill"
   q?: string;
   page?: string;
-  per_page?: string;
 }>;
-
-// ── Sidebar options ───────────────────────────────────────────────────────────
-
-const STATE_OPTIONS = [
-  { code: "CT", name: "Connecticut" },
-  { code: "ME", name: "Maine" },
-  { code: "MA", name: "Massachusetts" },
-  { code: "NH", name: "New Hampshire" },
-  { code: "NJ", name: "New Jersey" },
-  { code: "NY", name: "New York" },
-  { code: "PA", name: "Pennsylvania" },
-  { code: "RI", name: "Rhode Island" },
-  { code: "VT", name: "Vermont" },
-];
 
 // ── Skeleton ──────────────────────────────────────────────────────────────────
 
@@ -83,27 +50,23 @@ function ResultsSkeleton() {
 // ── Results ───────────────────────────────────────────────────────────────────
 
 async function DisposalResults({
-  states,
-  facility_types,
-  active_only,
+  state,
+  type,
   q,
   page,
-  pageSize,
 }: {
-  states: string[];
-  facility_types: string[];
-  active_only: boolean;
+  state?: string;
+  type?: string;
   q?: string;
   page: number;
-  pageSize: PageSize;
 }) {
   const { data: facilities, count: total } = await getDisposalFacilitiesPaginated(
-    { states, facility_types: facility_types.length > 0 ? facility_types : undefined, active_only, q },
+    { state, facility_type: type, active_only: true, q },
     page,
-    pageSize
+    PAGE_SIZE
   );
 
-  // Check auth + saved IDs for save buttons
+  // Auth + saved IDs for save buttons
   const supabase = await createClient();
   const {
     data: { user },
@@ -118,7 +81,7 @@ async function DisposalResults({
     savedIds = new Set((savedRows ?? []).map((r) => r.facility_id));
   }
 
-  if (total === 0) {
+  if (!total || total === 0) {
     return (
       <div className="text-center py-20">
         <p className="text-lg font-medium text-gray-700 mb-1">No facilities found</p>
@@ -127,8 +90,8 @@ async function DisposalResults({
     );
   }
 
-  const from = (page - 1) * pageSize + 1;
-  const to   = Math.min(page * pageSize, total);
+  const from = (page - 1) * PAGE_SIZE + 1;
+  const to   = Math.min(page * PAGE_SIZE, total);
 
   return (
     <div className="space-y-3">
@@ -198,213 +161,8 @@ async function DisposalResults({
         );
       })}
 
-      <Pagination page={page} pageSize={pageSize} total={total} />
+      <Pagination page={page} pageSize={PAGE_SIZE} total={total} />
     </div>
-  );
-}
-
-// ── Filter sidebar ────────────────────────────────────────────────────────────
-
-function FilterSidebar({
-  selectedStates,
-  selectedTypes,
-  activeOnly,
-  q,
-  perPage,
-}: {
-  selectedStates: string[];
-  selectedTypes: string[];
-  activeOnly: boolean;
-  q?: string;
-  perPage: PageSize;
-}) {
-  function buildUrl(overrides: Record<string, string | undefined>) {
-    const params = new URLSearchParams();
-    const merged: Record<string, string | undefined> = {
-      states:   selectedStates.length > 0 ? selectedStates.join(",") : undefined,
-      types:    selectedTypes.length > 0 ? selectedTypes.join(",") : undefined,
-      active:   activeOnly ? "1" : "0",
-      q,
-      per_page: perPage !== 25 ? String(perPage) : undefined,
-      page:     "1",
-      ...overrides,
-    };
-    for (const [k, v] of Object.entries(merged)) {
-      if (!v) continue;
-      if (k === "active" && v === "1") continue; // active=1 is default, omit
-      params.set(k, v);
-    }
-    const qs = params.toString();
-    return `/disposal${qs ? `?${qs}` : ""}`;
-  }
-
-  return (
-    <aside className="md:w-56 md:shrink-0 space-y-6">
-      {/* State — multi-select toggle */}
-      <div>
-        <div className="flex items-center justify-between mb-2">
-          <h3 className="text-xs font-semibold uppercase tracking-wider text-gray-500">
-            State
-          </h3>
-          {selectedStates.length > 0 && (
-            <Link
-              href={buildUrl({ states: undefined })}
-              className="text-xs text-[#2D6A4F] hover:underline"
-            >
-              Clear
-            </Link>
-          )}
-        </div>
-        <div className="space-y-1">
-          {STATE_OPTIONS.map((s) => {
-            const isSelected = selectedStates.includes(s.code);
-            const nextStates = isSelected
-              ? selectedStates.filter((c) => c !== s.code)
-              : [...selectedStates, s.code];
-            return (
-              <Link
-                key={s.code}
-                href={buildUrl({ states: nextStates.length > 0 ? nextStates.join(",") : undefined })}
-                className={`flex items-center gap-2 text-sm px-2 py-1.5 rounded-lg transition-colors ${
-                  isSelected
-                    ? "bg-[#2D6A4F]/10 text-[#2D6A4F] font-medium"
-                    : "text-gray-600 hover:bg-gray-50"
-                }`}
-              >
-                <span
-                  className={`size-4 shrink-0 rounded border flex items-center justify-center text-[10px] font-bold ${
-                    isSelected
-                      ? "bg-[#2D6A4F] border-[#2D6A4F] text-white"
-                      : "border-gray-300"
-                  }`}
-                >
-                  {isSelected ? "✓" : ""}
-                </span>
-                {s.name}
-              </Link>
-            );
-          })}
-        </div>
-      </div>
-
-      {/* Facility type — multi-select checkboxes */}
-      <div>
-        <div className="flex items-center justify-between mb-2">
-          <h3 className="text-xs font-semibold uppercase tracking-wider text-gray-500">
-            Facility Type
-          </h3>
-          {selectedTypes.length > 0 && (
-            <Link
-              href={buildUrl({ types: undefined })}
-              className="text-xs text-[#2D6A4F] hover:underline"
-            >
-              Clear
-            </Link>
-          )}
-        </div>
-        <div className="space-y-1">
-          {/* "All Types" — clears selection */}
-          <Link
-            href={buildUrl({ types: undefined })}
-            className={`flex items-center gap-2 text-sm px-2 py-1.5 rounded-lg transition-colors ${
-              selectedTypes.length === 0
-                ? "bg-[#2D6A4F]/10 text-[#2D6A4F] font-medium"
-                : "text-gray-600 hover:bg-gray-50"
-            }`}
-          >
-            <span
-              className={`size-4 shrink-0 rounded border flex items-center justify-center text-[10px] font-bold ${
-                selectedTypes.length === 0
-                  ? "bg-[#2D6A4F] border-[#2D6A4F] text-white"
-                  : "border-gray-300"
-              }`}
-            >
-              {selectedTypes.length === 0 ? "✓" : ""}
-            </span>
-            All Types
-          </Link>
-          {FACILITY_TYPES.map((t) => {
-            const isSelected = selectedTypes.includes(t);
-            const nextTypes = isSelected
-              ? selectedTypes.filter((x) => x !== t)
-              : [...selectedTypes, t];
-            return (
-              <Link
-                key={t}
-                href={buildUrl({ types: nextTypes.length > 0 ? nextTypes.join(",") : undefined })}
-                className={`flex items-center gap-2 text-sm px-2 py-1.5 rounded-lg transition-colors ${
-                  isSelected
-                    ? "bg-[#2D6A4F]/10 text-[#2D6A4F] font-medium"
-                    : "text-gray-600 hover:bg-gray-50"
-                }`}
-              >
-                <span
-                  className={`size-4 shrink-0 rounded border flex items-center justify-center text-[10px] font-bold ${
-                    isSelected
-                      ? "bg-[#2D6A4F] border-[#2D6A4F] text-white"
-                      : "border-gray-300"
-                  }`}
-                >
-                  {isSelected ? "✓" : ""}
-                </span>
-                {FACILITY_TYPE_LABELS[t]}
-              </Link>
-            );
-          })}
-        </div>
-      </div>
-
-      {/* Active only toggle */}
-      <div>
-        <h3 className="text-xs font-semibold uppercase tracking-wider text-gray-500 mb-2">
-          Status
-        </h3>
-        <div className="space-y-1">
-          <Link
-            href={buildUrl({ active: "1" })}
-            className={`block text-sm px-2 py-1.5 rounded-lg transition-colors ${
-              activeOnly
-                ? "bg-[#2D6A4F]/10 text-[#2D6A4F] font-medium"
-                : "text-gray-600 hover:bg-gray-50"
-            }`}
-          >
-            Active only
-          </Link>
-          <Link
-            href={buildUrl({ active: "0" })}
-            className={`block text-sm px-2 py-1.5 rounded-lg transition-colors ${
-              !activeOnly
-                ? "bg-[#2D6A4F]/10 text-[#2D6A4F] font-medium"
-                : "text-gray-600 hover:bg-gray-50"
-            }`}
-          >
-            Include closed
-          </Link>
-        </div>
-      </div>
-
-      {/* Per-page */}
-      <div>
-        <h3 className="text-xs font-semibold uppercase tracking-wider text-gray-500 mb-2">
-          Per page
-        </h3>
-        <div className="flex gap-1">
-          {VALID_PAGE_SIZES.map((n) => (
-            <Link
-              key={n}
-              href={buildUrl({ per_page: n !== 25 ? String(n) : undefined, page: "1" })}
-              className={`flex-1 text-center text-sm px-2 py-1.5 rounded-lg transition-colors ${
-                perPage === n
-                  ? "bg-[#2D6A4F]/10 text-[#2D6A4F] font-medium"
-                  : "text-gray-600 hover:bg-gray-50"
-              }`}
-            >
-              {n}
-            </Link>
-          ))}
-        </div>
-      </div>
-    </aside>
   );
 }
 
@@ -417,47 +175,14 @@ export default async function DisposalPage({
 }) {
   const params = await searchParams;
 
-  // Multi-state: ?states=NJ,NY  (preferred)
-  // Single-state: ?state=NJ     (legacy backward compat — e.g. from state landing page links)
-  const selectedStates = (params.states ?? "")
-    .split(",")
-    .map((s) => s.trim().toUpperCase())
-    .filter(Boolean);
-  const legacy_state = (!params.states && params.state)
-    ? params.state.trim().toUpperCase()
-    : undefined;
-  const effectiveStates = selectedStates.length > 0
-    ? selectedStates
-    : legacy_state ? [legacy_state] : [];
-
-  // Multi-type: ?types=landfill,mrf  (preferred)
-  // Single-type: ?type=landfill      (legacy backward compat)
-  const selectedTypes = (params.types ?? "")
-    .split(",")
-    .map((t) => t.trim().toLowerCase())
-    .filter(Boolean);
-  const legacy_type = (!params.types && params.type) ? params.type : undefined;
-  const effectiveTypes = selectedTypes.length > 0
-    ? selectedTypes
-    : legacy_type ? [legacy_type] : [];
-
-  const active_only = params.active !== "0";
-  const q           = params.q || undefined;
-  const page        = Math.max(1, parseInt(params.page ?? "1", 10) || 1);
-  const pageSize    = parsePageSize(params.per_page);
-
-  const filters = {
-    states: effectiveStates,
-    facility_types: effectiveTypes.length > 0 ? effectiveTypes : undefined,
-    active_only,
-    q,
-  };
-
-  // Fetch facilities for map (server-side, passed as props to client component)
-  const mapFacilities = await getDisposalFacilitiesForMap(filters);
+  const state = params.state?.trim().toUpperCase() || undefined;
+  const type  = params.type?.trim().toLowerCase()  || undefined;
+  const q     = params.q || undefined;
+  const page  = Math.max(1, parseInt(params.page ?? "1", 10) || 1);
 
   return (
-    <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+    <div className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+      {/* Header */}
       <div className="mb-6">
         <h1 className="text-2xl font-bold text-gray-900">
           Disposal Facilities Directory
@@ -467,53 +192,38 @@ export default async function DisposalPage({
         </p>
       </div>
 
-      <div className="mb-5">
-        <Suspense fallback={
-          <div className="w-full h-[42px] rounded-lg border border-gray-200 bg-gray-50 animate-pulse" />
-        }>
-          <SearchBar placeholder="Search facilities by name..." />
-        </Suspense>
+      {/* Filters — search bar + state/type dropdowns */}
+      <div className="flex flex-col sm:flex-row gap-2 mb-6">
+        <div className="flex-1">
+          <Suspense fallback={
+            <div className="w-full h-10 rounded-lg border border-gray-200 bg-gray-50 animate-pulse" />
+          }>
+            <SearchBar placeholder="Search facilities by name..." />
+          </Suspense>
+        </div>
+        <DisposalFilterDropdowns
+          state={state ?? ""}
+          type={type ?? ""}
+          q={q}
+        />
       </div>
 
-      {/* Map */}
-      {mapFacilities.length > 0 && (
-        <DisposalMap facilities={mapFacilities as MapFacility[]} />
-      )}
+      {/* Results */}
+      <Suspense fallback={<ResultsSkeleton />}>
+        <DisposalResults state={state} type={type} q={q} page={page} />
+      </Suspense>
 
-      <div className="flex flex-col md:flex-row gap-4 md:gap-6 md:items-start">
-        <FilterSidebar
-          selectedStates={effectiveStates}
-          selectedTypes={effectiveTypes}
-          activeOnly={active_only}
-          q={q}
-          perPage={pageSize}
-        />
-
-        <div className="flex-1 min-w-0 space-y-4">
-          <Suspense fallback={<ResultsSkeleton />}>
-            <DisposalResults
-              states={effectiveStates}
-              facility_types={effectiveTypes}
-              active_only={active_only}
-              q={q}
-              page={page}
-              pageSize={pageSize}
-            />
-          </Suspense>
-
-          {/* Add missing facility banner */}
-          <div className="rounded-xl border border-dashed border-gray-200 bg-gray-50 px-6 py-5 flex flex-col sm:flex-row items-center justify-between gap-4">
-            <p className="text-sm text-gray-600">
-              Missing a facility from our directory?
-            </p>
-            <Link
-              href="/submit"
-              className="shrink-0 inline-flex items-center gap-1.5 text-sm font-medium text-[#2D6A4F] hover:underline"
-            >
-              Suggest a facility →
-            </Link>
-          </div>
-        </div>
+      {/* Submit banner */}
+      <div className="mt-6 rounded-xl border border-dashed border-gray-200 bg-gray-50 px-6 py-5 flex flex-col sm:flex-row items-center justify-between gap-4">
+        <p className="text-sm text-gray-600">
+          Missing a facility from our directory?
+        </p>
+        <Link
+          href="/submit"
+          className="shrink-0 inline-flex items-center gap-1.5 text-sm font-medium text-[#2D6A4F] hover:underline"
+        >
+          Suggest a facility →
+        </Link>
       </div>
     </div>
   );

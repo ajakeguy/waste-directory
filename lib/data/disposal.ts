@@ -129,8 +129,9 @@ export async function getDisposalFacilitiesPaginated(
   pageSize: number = 25
 ): Promise<{ data: DisposalFacility[]; count: number }> {
   const supabase = await createClient();
-  const from = (page - 1) * pageSize;
-  const to   = from + pageSize - 1;
+  const safeSize = Math.min(pageSize, 25); // Hard cap — never exceed 25 rows per page
+  const from = (page - 1) * safeSize;
+  const to   = from + safeSize - 1;
 
   let query = supabase
     .from("disposal_facilities")
