@@ -1,9 +1,9 @@
-name: CT Disposal Facilities Sync
+﻿name: CT Disposal Facilities Sync
 
 on:
   # Monthly on the 20th at 3am UTC
-  schedule:
-    - cron: "0 3 20 * *"
+  # schedule:
+  #   - cron: "0 3 20 * *"
   # Allow manual runs from the GitHub Actions UI
   workflow_dispatch:
 

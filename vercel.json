@@ -1,0 +1,9 @@
+{
+  "_comment": "MAINTENANCE MODE - remove rewrites block to restore Next.js app",
+  "rewrites": [
+    {
+      "source": "/(.*)",
+      "destination": "/maintenance.html"
+    }
+  ]
+}

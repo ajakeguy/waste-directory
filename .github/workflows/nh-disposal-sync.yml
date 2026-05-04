@@ -1,8 +1,8 @@
-name: NH Disposal Facilities Sync
+﻿name: NH Disposal Facilities Sync
 
 on:
-  schedule:
-    - cron: "0 3 12 * *"   # Monthly on the 12th at 3am UTC
+  # schedule:
+  #   - cron: "0 3 12 * *"   # Monthly on the 12th at 3am UTC
   workflow_dispatch:
 
 jobs:

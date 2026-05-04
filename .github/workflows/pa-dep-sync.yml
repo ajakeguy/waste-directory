@@ -1,9 +1,9 @@
-name: PA DEP WTSP Sync
+﻿name: PA DEP WTSP Sync
 
 on:
   # Run on the 5th of each month at 3am UTC
-  schedule:
-    - cron: "0 3 5 * *"
+  # schedule:
+  #   - cron: "0 3 5 * *"
   # Allow manual runs from the GitHub Actions UI
   workflow_dispatch:
 

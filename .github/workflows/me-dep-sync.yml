@@ -1,9 +1,9 @@
-name: ME DEP Hauler Sync
+﻿name: ME DEP Hauler Sync
 
 on:
   # Run on the 9th of each month at 3am UTC
-  schedule:
-    - cron: "0 3 9 * *"
+  # schedule:
+  #   - cron: "0 3 9 * *"
   # Allow manual runs from the GitHub Actions UI
   workflow_dispatch:
 

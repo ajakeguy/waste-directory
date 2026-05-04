@@ -1,9 +1,9 @@
-name: MA Hauler Import Sync
+﻿name: MA Hauler Import Sync
 
 on:
   # Run on the 3rd of each month at 3am UTC
-  schedule:
-    - cron: "0 3 3 * *"
+  # schedule:
+  #   - cron: "0 3 3 * *"
   # Allow manual runs from the GitHub Actions UI
   workflow_dispatch:
 

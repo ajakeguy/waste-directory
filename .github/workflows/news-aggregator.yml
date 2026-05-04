@@ -1,9 +1,9 @@
-name: News Aggregator
+﻿name: News Aggregator
 
 on:
   # Run every 6 hours
-  schedule:
-    - cron: "0 */6 * * *"
+  # schedule:
+  #   - cron: "0 */6 * * *"
   # Allow manual runs from the GitHub Actions UI
   workflow_dispatch:
 

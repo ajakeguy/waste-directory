@@ -1,9 +1,9 @@
 name: NJ Recycling Facility Sync
 
 on:
-  schedule:
-    # Monthly on the 15th at 03:00 UTC
-    - cron: "0 3 15 * *"
+  # schedule:
+  #   # Monthly on the 15th at 03:00 UTC
+  #   - cron: "0 3 15 * *"
   workflow_dispatch:
 
 jobs:

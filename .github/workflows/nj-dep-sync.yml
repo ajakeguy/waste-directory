@@ -1,4 +1,4 @@
-name: NJ DEP A-901 Sync
+﻿name: NJ DEP A-901 Sync
 
 # This pipeline operates in two modes:
 #
@@ -14,8 +14,8 @@ name: NJ DEP A-901 Sync
 
 on:
   # Run on the 7th of each month at 3am UTC
-  schedule:
-    - cron: "0 3 7 * *"
+  # schedule:
+  #   - cron: "0 3 7 * *"
   # Allow manual runs from the GitHub Actions UI
   workflow_dispatch:
 

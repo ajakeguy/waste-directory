@@ -1,9 +1,9 @@
-name: NYC BIC License Sync
+﻿name: NYC BIC License Sync
 
 on:
   # Run on the 4th of each month at 3am UTC
-  schedule:
-    - cron: "0 3 4 * *"
+  # schedule:
+  #   - cron: "0 3 4 * *"
   # Allow manual runs from the GitHub Actions UI
   workflow_dispatch:
 

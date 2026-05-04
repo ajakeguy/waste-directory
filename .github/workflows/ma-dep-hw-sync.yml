@@ -1,4 +1,4 @@
-name: MA DEP Hazardous Waste Transporter Sync
+﻿name: MA DEP Hazardous Waste Transporter Sync
 
 # Note: mass.gov blocks automated PDF downloads (403).
 # Before running this workflow, manually download the PDF from a browser:
@@ -8,8 +8,8 @@ name: MA DEP Hazardous Waste Transporter Sync
 
 on:
   # Monthly on the 10th at 2am UTC
-  schedule:
-    - cron: "0 2 10 * *"
+  # schedule:
+  #   - cron: "0 2 10 * *"
   # Allow manual runs from the GitHub Actions UI
   workflow_dispatch:
 
