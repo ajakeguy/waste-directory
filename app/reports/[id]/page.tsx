@@ -50,6 +50,7 @@ export default async function ReportViewPage({ params }: Props) {
       {/* Back link */}
       <Link
         href="/reports"
+        prefetch={false}
         className="inline-flex items-center gap-1.5 text-sm text-gray-500 hover:text-gray-900 mb-6"
       >
         <ArrowLeft className="size-3.5" />
@@ -64,7 +65,7 @@ export default async function ReportViewPage({ params }: Props) {
 
         {/* ── Actions sidebar (right) */}
         <div className="w-full lg:w-56 shrink-0 space-y-3 lg:sticky lg:top-24">
-          <Link href={`/reports/${id}/edit`} className="block">
+          <Link href={`/reports/${id}/edit`} prefetch={false} className="block">
             <Button variant="outline" className="w-full gap-2">
               <Pencil className="size-4" />
               Edit Report

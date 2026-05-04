@@ -94,6 +94,7 @@ export default async function DisposalFacilityPage({ params }: Props) {
       {/* Back link */}
       <Link
         href="/disposal"
+        prefetch={false}
         className="inline-flex items-center gap-1.5 text-sm text-[#2D6A4F] hover:underline mb-6"
       >
         <ArrowLeft className="size-4" />

@@ -73,6 +73,7 @@ export function UserMenu({ name, email }: Props) {
 
           <Link
             href="/dashboard"
+            prefetch={false}
             onClick={() => setOpen(false)}
             className="flex items-center gap-2.5 px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 transition-colors"
           >

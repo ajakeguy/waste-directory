@@ -482,7 +482,7 @@ async function HaulerProfilePage({ segment }: { segment: string }) {
     <div className="max-w-3xl mx-auto px-4 sm:px-6 py-8">
       {/* Breadcrumb */}
       <nav className="flex items-center gap-1.5 text-sm text-gray-500 mb-6">
-        <Link href="/directory" className="hover:text-[#2D6A4F] transition-colors">
+        <Link href="/directory" prefetch={false} className="hover:text-[#2D6A4F] transition-colors">
           Directory
         </Link>
         <span>/</span>
@@ -717,6 +717,7 @@ async function HaulerProfilePage({ segment }: { segment: string }) {
       <div className="flex items-center justify-between pt-6 border-t border-gray-100 mt-2">
         <Link
           href="/directory"
+          prefetch={false}
           className="flex items-center gap-1.5 text-sm text-gray-500 hover:text-[#2D6A4F] transition-colors"
         >
           <ArrowLeft className="size-3.5" />

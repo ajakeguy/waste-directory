@@ -28,36 +28,55 @@ export default async function Header() {
         {/* Site name */}
         <Link
           href="/"
+          prefetch={false}
           className="text-xl font-bold tracking-tight hover:opacity-90 transition-opacity"
         >
-          waste.markets
+          WasteDirectory
         </Link>
 
         {/* Nav links — desktop only */}
         <nav className="hidden sm:flex items-center gap-8">
           <Link
             href="/directory"
+            prefetch={false}
             className="text-sm font-medium text-white/90 hover:text-white transition-colors"
           >
-            Haulers
+            Directory
           </Link>
           <Link
             href="/disposal"
+            prefetch={false}
             className="text-sm font-medium text-white/90 hover:text-white transition-colors"
           >
             Disposal
           </Link>
           <Link
-            href="/tools"
-            className="text-sm font-medium text-white/90 hover:text-white transition-colors"
-          >
-            Tools
-          </Link>
-          <Link
             href="/marketplace"
+            prefetch={false}
             className="text-sm font-medium text-white/90 hover:text-white transition-colors"
           >
             Marketplace
+          </Link>
+          <Link
+            href="/reports"
+            prefetch={false}
+            className="text-sm font-medium text-white/90 hover:text-white transition-colors"
+          >
+            Reports
+          </Link>
+          <Link
+            href="/routes"
+            prefetch={false}
+            className="text-sm font-medium text-white/90 hover:text-white transition-colors"
+          >
+            Routes
+          </Link>
+          <Link
+            href="/news"
+            prefetch={false}
+            className="text-sm font-medium text-white/90 hover:text-white transition-colors"
+          >
+            News
           </Link>
         </nav>
 
@@ -66,7 +85,7 @@ export default async function Header() {
           {user ? (
             <UserMenu name={displayName} email={user.email ?? ""} />
           ) : (
-            <Link href="/login">
+            <Link href="/login" prefetch={false}>
               <Button
                 variant="outline"
                 size="sm"

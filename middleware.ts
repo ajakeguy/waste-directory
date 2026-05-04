@@ -1,8 +1,34 @@
 import { createServerClient } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
 
+// Aggressive commercial crawlers that generate high egress — block them before any Supabase calls
+const BOT_UA_FRAGMENTS = [
+  "ahrefsbot", "semrushbot", "mj12bot", "dotbot", "bytespider",
+  "petalbot", "baiduspider", "yandexbot", "serpstatbot", "dataforseobot",
+  "proximic", "sogou", "ia_archiver", "sitechecker", "rogerbot",
+  "seokicks", "domaincrawler", "opensiteexplorer", "linkpadbot",
+  "blexbot", "sistrix", "majestic", "netsystemsresearch", "scrapy",
+];
+
+const PROTECTED_PREFIXES = ["/dashboard", "/reports", "/routes"];
+
 export async function middleware(request: NextRequest) {
-  // Start with a plain next() response so cookies can be mutated below
+  // 1. Block aggressive bots immediately — zero Supabase calls, zero egress
+  const ua = (request.headers.get("user-agent") ?? "").toLowerCase();
+  if (BOT_UA_FRAGMENTS.some((frag) => ua.includes(frag))) {
+    return new NextResponse("Forbidden", { status: 403 });
+  }
+
+  // 2. Only run Supabase session validation for routes that require auth.
+  //    Public routes skip Supabase entirely, eliminating the per-request API call.
+  const pathname = request.nextUrl.pathname;
+  const isProtected = PROTECTED_PREFIXES.some((p) => pathname.startsWith(p));
+
+  if (!isProtected) {
+    return NextResponse.next();
+  }
+
+  // 3. Refresh session token and verify auth for protected routes
   let supabaseResponse = NextResponse.next({ request });
 
   const supabase = createServerClient(
@@ -14,8 +40,6 @@ export async function middleware(request: NextRequest) {
           return request.cookies.getAll();
         },
         setAll(cookiesToSet) {
-          // Write updated cookies onto both the request and the response so
-          // downstream server components see a refreshed session.
           cookiesToSet.forEach(({ name, value }) =>
             request.cookies.set(name, value)
           );
@@ -29,17 +53,14 @@ export async function middleware(request: NextRequest) {
   );
 
   // IMPORTANT: Do not add logic between createServerClient and getUser.
-  // getUser() refreshes the session token if it has expired.
   const {
     data: { user },
   } = await supabase.auth.getUser();
 
-  // Protect /dashboard and /reports — redirect unauthenticated users to /login
-  const protectedPrefixes = ["/dashboard", "/reports", "/routes"];
-  if (!user && protectedPrefixes.some((p) => request.nextUrl.pathname.startsWith(p))) {
+  if (!user) {
     const loginUrl = request.nextUrl.clone();
     loginUrl.pathname = "/login";
-    loginUrl.searchParams.set("next", request.nextUrl.pathname);
+    loginUrl.searchParams.set("next", pathname);
     return NextResponse.redirect(loginUrl);
   }
 
@@ -47,7 +68,6 @@ export async function middleware(request: NextRequest) {
 }
 
 export const config = {
-  // Run on all routes except static assets and images
   matcher: [
     "/((?!_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)",
   ],

@@ -78,7 +78,7 @@ async function ListingResults({
         <p className="text-lg font-medium text-gray-700 mb-1">No listings found</p>
         <p className="text-sm text-gray-500">
           Try adjusting your filters or{" "}
-          <Link href="/marketplace/new" className="text-[#2D6A4F] hover:underline">
+          <Link href="/marketplace/new" prefetch={false} className="text-[#2D6A4F] hover:underline">
             post your own listing
           </Link>
           .
@@ -123,6 +123,7 @@ export default async function MarketplacePage({
         {user && (
           <Link
             href="/marketplace/new"
+            prefetch={false}
             className="inline-flex items-center gap-1.5 h-9 px-4 rounded-lg bg-[#2D6A4F] text-white text-sm font-medium hover:bg-[#245a42] transition-colors shrink-0"
           >
             <Plus className="size-4" />

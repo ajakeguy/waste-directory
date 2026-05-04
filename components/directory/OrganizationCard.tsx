@@ -25,6 +25,7 @@ export function OrganizationCard({ org, savedOrgIds, userId = null }: Props) {
           <div className="flex items-center gap-2 flex-wrap">
             <Link
               href={profileUrl}
+              prefetch={false}
               className="font-semibold text-gray-900 hover:text-[#2D6A4F] transition-colors leading-snug"
             >
               {org.name}

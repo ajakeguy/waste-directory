@@ -2,7 +2,7 @@ import { redirect } from "next/navigation";
 import Link from "next/link";
 import type { Metadata } from "next";
 import { createClient } from "@/lib/supabase/server";
-import { Plus, MapPin, Route, Trash2 } from "lucide-react";
+import { Plus, MapPin, Route } from "lucide-react";
 import type { SavedRoute } from "@/types";
 
 export const metadata: Metadata = {
@@ -35,6 +35,7 @@ export default async function RoutesPage() {
         </div>
         <Link
           href="/routes/new"
+          prefetch={false}
           className="inline-flex items-center gap-2 h-9 px-4 rounded-lg bg-[#2D6A4F] text-white text-sm font-medium hover:bg-[#245a42] transition-colors"
         >
           <Plus className="size-4" />
@@ -55,6 +56,7 @@ export default async function RoutesPage() {
           </p>
           <Link
             href="/routes/new"
+            prefetch={false}
             className="inline-flex h-9 items-center px-5 rounded-lg bg-[#2D6A4F] text-white text-sm font-medium hover:bg-[#245a42] transition-colors"
           >
             Build your first route
@@ -97,6 +99,7 @@ export default async function RoutesPage() {
 
               <Link
                 href={`/routes/${route.id}`}
+                prefetch={false}
                 className="shrink-0 inline-flex h-8 items-center px-3 rounded-lg border border-gray-200 text-sm text-gray-600 hover:bg-gray-50 transition-colors"
               >
                 Open

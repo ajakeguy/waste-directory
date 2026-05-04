@@ -98,6 +98,7 @@ function NavLink({
   return (
     <Link
       href={href}
+      prefetch={false}
       onClick={onClose}
       className="flex items-center h-10 px-3 rounded-lg text-sm font-medium text-white/90 hover:bg-white/10 hover:text-white transition-colors"
     >

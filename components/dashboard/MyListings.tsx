@@ -58,6 +58,7 @@ export function MyListings({
         <h2 className="font-semibold text-gray-900 text-lg">My Marketplace Listings</h2>
         <Link
           href="/marketplace/new"
+          prefetch={false}
           className="inline-flex items-center gap-1.5 h-8 px-3 rounded-lg bg-[#2D6A4F] text-white text-sm font-medium hover:bg-[#245a42] transition-colors"
         >
           <Plus className="size-3.5" />
@@ -76,6 +77,7 @@ export function MyListings({
           </p>
           <Link
             href="/marketplace/new"
+            prefetch={false}
             className="inline-flex h-9 items-center px-5 rounded-lg bg-[#2D6A4F] text-white text-sm font-medium hover:bg-[#245a42] transition-colors"
           >
             Post your first listing
@@ -115,6 +117,7 @@ export function MyListings({
                       <div className="flex items-start gap-2 flex-wrap min-w-0">
                         <Link
                           href={`/marketplace/${listing.id}`}
+                          prefetch={false}
                           className="font-medium text-gray-900 hover:text-[#2D6A4F] transition-colors text-sm leading-snug"
                         >
                           {listing.title}
@@ -139,6 +142,7 @@ export function MyListings({
                         )}
                         <Link
                           href={`/marketplace/${listing.id}/edit`}
+                          prefetch={false}
                           className="inline-flex items-center gap-1 h-7 px-2.5 rounded-lg border border-gray-200 text-xs text-gray-600 hover:bg-gray-50 transition-colors"
                         >
                           <Pencil className="size-3.5" />

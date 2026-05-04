@@ -237,6 +237,7 @@ export function RegisterForm() {
         Already have an account?{" "}
         <Link
           href={`/login${next !== "/dashboard" ? `?next=${encodeURIComponent(next)}` : ""}`}
+          prefetch={false}
           className="font-medium text-[#2D6A4F] hover:underline"
         >
           Sign in

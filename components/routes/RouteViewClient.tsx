@@ -275,7 +275,7 @@ export function RouteViewClient({ route }: Props) {
 
           {/* Action buttons */}
           <div className="flex flex-col gap-2">
-            <Link href={`/routes/${route.id}/edit`} className="block">
+            <Link href={`/routes/${route.id}/edit`} prefetch={false} className="block">
               <Button variant="outline" className="w-full gap-2">
                 <Pencil className="size-4" /> Edit Route
               </Button>

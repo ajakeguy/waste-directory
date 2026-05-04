@@ -40,6 +40,7 @@ export function ListingCard({ listing }: { listing: CardListing }) {
   return (
     <Link
       href={`/marketplace/${listing.id}`}
+      prefetch={false}
       className="group block bg-white rounded-xl border border-gray-200 overflow-hidden hover:border-[#2D6A4F]/40 hover:shadow-sm transition-all"
     >
       {/* Photo */}

@@ -71,7 +71,7 @@ export default async function ListingDetailPage({ params }: Props) {
     <div className="max-w-4xl mx-auto px-4 sm:px-6 py-8">
       {/* Breadcrumb */}
       <nav className="flex items-center gap-1.5 text-sm text-gray-500 mb-6">
-        <Link href="/marketplace" className="hover:text-[#2D6A4F] transition-colors">
+        <Link href="/marketplace" prefetch={false} className="hover:text-[#2D6A4F] transition-colors">
           Marketplace
         </Link>
         <span>/</span>
@@ -188,6 +188,7 @@ export default async function ListingDetailPage({ params }: Props) {
                 </p>
                 <Link
                   href="/register"
+                  prefetch={false}
                   className="inline-flex h-9 items-center px-4 rounded-lg bg-[#2D6A4F] text-white text-sm font-medium hover:bg-[#245a42] transition-colors"
                 >
                   Sign up free
@@ -200,6 +201,7 @@ export default async function ListingDetailPage({ params }: Props) {
           {isOwner && (
             <Link
               href={`/marketplace/${listing.id}/edit`}
+              prefetch={false}
               className="flex h-9 items-center justify-center rounded-lg border border-[#2D6A4F] text-[#2D6A4F] text-sm font-medium hover:bg-[#2D6A4F]/5 transition-colors"
             >
               Edit listing
@@ -212,6 +214,7 @@ export default async function ListingDetailPage({ params }: Props) {
       <div className="mt-8 pt-6 border-t border-gray-100">
         <Link
           href="/marketplace"
+          prefetch={false}
           className="flex items-center gap-1.5 text-sm text-gray-500 hover:text-[#2D6A4F] transition-colors"
         >
           <ArrowLeft className="size-3.5" />

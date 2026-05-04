@@ -45,7 +45,7 @@ export default async function ReportsPage() {
             Generate professional waste diversion reports for your customers.
           </p>
         </div>
-        <Link href="/reports/new">
+        <Link href="/reports/new" prefetch={false}>
           <Button className="bg-[#2D6A4F] hover:bg-[#245a42] text-white gap-2">
             <Plus className="size-4" />
             New Report
@@ -61,7 +61,7 @@ export default async function ReportsPage() {
           <p className="text-gray-500 text-sm mb-6 max-w-sm mx-auto">
             Create your first diversion report to show customers their environmental impact.
           </p>
-          <Link href="/reports/new">
+          <Link href="/reports/new" prefetch={false}>
             <Button className="bg-[#2D6A4F] hover:bg-[#245a42] text-white gap-2">
               <Plus className="size-4" />
               Create your first diversion report
@@ -117,10 +117,10 @@ export default async function ReportsPage() {
 
                 {/* Right: actions */}
                 <div className="flex items-center gap-2 shrink-0">
-                  <Link href={`/reports/${report.id}/edit`}>
+                  <Link href={`/reports/${report.id}/edit`} prefetch={false}>
                     <Button variant="outline" size="sm">Edit</Button>
                   </Link>
-                  <Link href={`/reports/${report.id}`}>
+                  <Link href={`/reports/${report.id}`} prefetch={false}>
                     <Button
                       size="sm"
                       className="bg-[#2D6A4F] hover:bg-[#245a42] text-white"

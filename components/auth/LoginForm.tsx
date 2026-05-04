@@ -140,6 +140,7 @@ export function LoginForm() {
         Don&apos;t have an account?{" "}
         <Link
           href={`/register${next !== "/dashboard" ? `?next=${encodeURIComponent(next)}` : ""}`}
+          prefetch={false}
           className="font-medium text-[#2D6A4F] hover:underline"
         >
           Create one

@@ -93,7 +93,7 @@ export default function EditListingPage() {
     return (
       <div className="max-w-2xl mx-auto px-4 py-16 text-center">
         <p className="text-gray-500">{error ?? "Unable to load listing."}</p>
-        <Link href="/marketplace" className="text-sm text-[#2D6A4F] hover:underline mt-4 inline-block">
+        <Link href="/marketplace" prefetch={false} className="text-sm text-[#2D6A4F] hover:underline mt-4 inline-block">
           Back to Marketplace
         </Link>
       </div>
@@ -106,6 +106,7 @@ export default function EditListingPage() {
       <div className="flex items-center gap-3 mb-6">
         <Link
           href={`/marketplace/${id}`}
+          prefetch={false}
           className="text-gray-400 hover:text-gray-600 transition-colors"
         >
           <ArrowLeft className="size-5" />
